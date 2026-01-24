@@ -8,27 +8,15 @@
 #include <cstdint>
 
 
-namespace bitgrain::jpeg {
-
-class Encoder {
-public:
-  explicit Encoder(const bitgrain_encoder_config_t& cfg)
-    : quality_(cfg.quality),
-      subsampling_(cfg.chroma_subsampling) {}
-
-  ~Encoder() = default;
-
-private:
-  uint8_t quality_;
-  bitgrain_chroma_subsampling_t subsampling_;
-};
-
+namespace bitgrain::jpeg
+{
+    class Encoder;
+    /* Wrapper C */
 }
 
-/* Wrapper C */
-
-struct bitgrain_encoder {
-  grain::jpeg::Encoder* impl;
+struct bitgrain_encoder
+{
+  bitgrain::jpeg::Encoder* impl;
 };
 
 bitgrain_encoder_t* bitgrain_encoder_create(

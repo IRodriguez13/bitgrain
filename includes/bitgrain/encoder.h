@@ -12,26 +12,26 @@ extern "C" {
 #endif
 
 
-typedef struct bitgrain_encoder bitgrain_encoder_t;
+typedef struct encoder encoder_t;
 
 typedef enum {
-  GRAIN_SUBSAMPLING_444 = 0,
-  GRAIN_SUBSAMPLING_422 = 1,
-  GRAIN_SUBSAMPLING_420 = 2
-} bitgrain_chroma_subsampling_t;
+  SUBSAMPLING_444 = 0,
+  SUBSAMPLING_422 = 1,
+  SUBSAMPLING_420 = 2
+} chroma_subsampling_t chroma_subsampling;
 
 typedef struct {
   uint8_t quality; /* 1..100 */
-  grain_chroma_subsampling_t chroma_subsampling;
-} bitgrain_encoder_config_t;
+  chroma_subsampling_t chroma_subsampling;
+} encoder_config_t;
 
 
-bitgrain_encoder_config_t* bitgrain_encoder_create(
-  const bitgrain_encoder_config_t* config
+encoder_t* encoder_create(
+  const encoder_config_t* config
 );
 
-void bitgrain_encoder_destroy(
-  bitgrain_encoder_t* encoder
+void encoder_destroy(
+  encoder_t* encoder
 );
 
 #ifdef __cplusplus
