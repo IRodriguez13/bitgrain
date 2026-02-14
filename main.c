@@ -177,6 +177,9 @@ int main(int argc, char **argv)
             break;
         case 'v':
             printf("bitgrain %s\n", BITGRAIN_VERSION);
+            printf("Author: Iván E. Rodriguez\n");
+            printf("License: GPLv3\n");
+            printf("Upstream: https://github.com/IRodriguez13/bitgrain\n");
             return 0;
         case 'h':
             usage(argv[0]);
