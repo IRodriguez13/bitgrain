@@ -10,6 +10,7 @@
 
 #include "encoder.h"
 #include "image_loader.h"
+#include "image_writer.h"
 
 #define OUT_BUF_SIZE (1024 * 1024 * 4)
 #define MAX_PIXELS   (4096 * 4096)
@@ -21,13 +22,13 @@ static void usage(const char *prog)
             "Comprimir (imagen → .bg):\n"
             "  %s -i <imagen> -o <salida.bg>\n"
             "  %s <imagen>                    → <imagen>.bg\n\n"
-            "Descomprimir (.bg → imagen):\n"
-            "  %s -d -i <archivo.bg> -o <imagen.pgm>\n"
-            "  %s -d <archivo.bg>             → <archivo>.pgm\n\n"
+            "Descomprimir (.bg → imagen visible):\n"
+            "  %s -d -i <archivo.bg> -o <imagen.jpg>\n"
+            "  %s -d <archivo.bg>             → <archivo>.jpg\n\n"
             "Opciones:\n"
             "  -i <archivo>   entrada (imagen o .bg según modo)\n"
             "  -o <archivo>   salida\n"
-            "  -d             descomprimir (.bg → PGM)\n"
+            "  -d             descomprimir (.bg → JPG o PGM según -o)\n"
             "  -y             sobrescribir salida\n"
             "  -h             esta ayuda\n",
             prog, prog, prog, prog);
@@ -41,7 +42,7 @@ static const char *get_ext(const char *path)
     return dot;
 }
 
-/* Salida por defecto: encode → .bg, decode → .pgm */
+/* Salida por defecto: encode → .bg, decode → .jpg */
 static int default_output_path(const char *input, char *out_buf, size_t buf_size, int decode_mode)
 {
     const char *ext = get_ext(input);
@@ -49,7 +50,7 @@ static int default_output_path(const char *input, char *out_buf, size_t buf_size
     if (decode_mode) {
         if (base_len + 5 >= buf_size) return -1;
         memcpy(out_buf, input, base_len);
-        memcpy(out_buf + base_len, ".pgm", 5);
+        memcpy(out_buf + base_len, ".jpg", 5);
     } else {
         if (base_len + 4 >= buf_size) return -1;
         memcpy(out_buf, input, base_len);
@@ -188,11 +189,20 @@ int main(int argc, char **argv)
             free(output_path_owned);
             return 1;
         }
-        if (write_pgm(output_path, pixels, width, height) != 0) {
-            fprintf(stderr, "Error: no se pudo escribir '%s'.\n", output_path);
-            free(pixels);
-            free(output_path_owned);
-            return 1;
+        {
+            size_t out_len = strlen(output_path);
+            int written = 0;
+            if (out_len >= 4 && (strcmp(output_path + out_len - 4, ".jpg") == 0 ||
+                                 (out_len >= 5 && strcmp(output_path + out_len - 5, ".jpeg") == 0)))
+                written = (bitgrain_write_jpg(output_path, pixels, width, height, 90) == 0);
+            if (!written)
+                written = (write_pgm(output_path, pixels, width, height) == 0);
+            if (!written) {
+                fprintf(stderr, "Error: no se pudo escribir '%s'.\n", output_path);
+                free(pixels);
+                free(output_path_owned);
+                return 1;
+            }
         }
         free(pixels);
         printf("%s -> %s  (%u×%u)\n", input_path, output_path, width, height);

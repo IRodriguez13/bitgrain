@@ -31,9 +31,6 @@ pub fn decode_grayscale(
     if width == 0 || height == 0 || width > 16384 || height > 16384 {
         return false;
     }
-    if (width % 8) != 0 || (height % 8) != 0 {
-        return false;
-    }
 
     let w = width as usize;
     let h = height as usize;
@@ -46,8 +43,9 @@ pub fn decode_grayscale(
     *out_height = height;
 
     let quant_table = encoder::default_quant_table();
-    let blocks_wide = w / 8;
-    let blocks_high = h / 8;
+    /* Mismo número de bloques que el encoder: step_by(8) sobre 0..w y 0..h */
+    let blocks_wide = (w + 7) / 8;
+    let blocks_high = (h + 7) / 8;
     let num_blocks = blocks_wide * blocks_high;
 
     let mut pos = HEADER_SIZE;
@@ -98,9 +96,12 @@ pub fn decode_grayscale(
 
         for y in 0..8 {
             for x in 0..8 {
-                let pixel = (block.data[y * 8 + x] + 128).clamp(0, 255);
-                let idx = (by + y) * w + (bx + x);
-                out_pixels[idx] = pixel as u8;
+                let px = bx + x;
+                let py = by + y;
+                if py < h && px < w {
+                    let pixel = (block.data[y * 8 + x] + 128).clamp(0, 255);
+                    out_pixels[py * w + px] = pixel as u8;
+                }
             }
         }
     }

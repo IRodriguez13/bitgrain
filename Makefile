@@ -12,6 +12,7 @@ C_SRCS = \
 	c/quant.c \
 	c/bitstream.c \
 	c/image_loader.c \
+	c/image_writer.c \
 	main.c
 
 C_OBJS = $(C_SRCS:.c=.o)

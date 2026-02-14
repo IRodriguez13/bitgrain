@@ -20,8 +20,8 @@ impl Blockizer {
 
                 for y in 0..8 {
                     for x in 0..8 {
-                        let ix = bx + x;
-                        let iy = by + y;
+                        let ix = (bx + x).min(self.width.saturating_sub(1));
+                        let iy = (by + y).min(self.height.saturating_sub(1));
 
                         let index = iy * self.width + ix;
 
