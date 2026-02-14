@@ -18,3 +18,14 @@ int bitgrain_write_jpg(const char *path,
 
     return stbi_write_jpg(path, (int)width, (int)height, comp, pixels, quality) ? 0 : -1;
 }
+
+int bitgrain_write_png(const char *path,
+                       const uint8_t *pixels,
+                       uint32_t width,
+                       uint32_t height,
+                       int comp)
+{
+    if (!path || !pixels) return -1;
+    if (comp != 1 && comp != 3) comp = 1;
+    return stbi_write_png(path, (int)width, (int)height, comp, pixels, 0) ? 0 : -1;
+}

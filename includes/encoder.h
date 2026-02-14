@@ -7,14 +7,9 @@
 extern "C" {
 #endif
 
-/**
+/*
  * Encode a grayscale image (8 bpp) to .bg stream.
- *
- * image: pointer to width*height bytes (row order, 1 byte per pixel)
- * out_buffer: buffer where compressed stream is written (with .bg header)
- * out_capacity: maximum size of out_buffer in bytes
- * out_len: output, number of bytes written
- *
+ * quality: 1–100 (higher = less quantization), 0 = default 85.
  * Returns 0 on success, -1 on error.
  */
 int bitgrain_encode_grayscale(
@@ -23,11 +18,12 @@ int bitgrain_encode_grayscale(
     uint32_t height,
     uint8_t *out_buffer,
     uint32_t out_capacity,
-    int32_t *out_len);
+    int32_t *out_len,
+    uint8_t quality);
 
-/**
+/*
  * Encode an RGB image (24 bpp, R G B per pixel) to .bg stream.
- * image: width*height*3 bytes.
+ * quality: 1–100, 0 = default 85.
  */
 int bitgrain_encode_rgb(
     const uint8_t *image,
@@ -35,9 +31,10 @@ int bitgrain_encode_rgb(
     uint32_t height,
     uint8_t *out_buffer,
     uint32_t out_capacity,
-    int32_t *out_len);
+    int32_t *out_len,
+    uint8_t quality);
 
-/**
+/*
  * Decode a .bg stream into pixels (grayscale or RGB per header).
  * out_channels: output, 1 = grayscale (w*h bytes), 3 = RGB (w*h*3 bytes).
  * out_capacity must be >= width*height*out_channels.
@@ -51,7 +48,7 @@ int bitgrain_decode(
     uint32_t *out_height,
     uint32_t *out_channels);
 
-/**
+/*
  * Decode a .bg stream to grayscale (version 1 only).
  */
 int bitgrain_decode_grayscale(

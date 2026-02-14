@@ -6,3 +6,4 @@ pub mod decoder;
 pub mod encoder;
 pub mod entropy;
 pub mod ffi;
+pub mod zigzag;

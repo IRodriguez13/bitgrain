@@ -1,3 +1,28 @@
-*.txt
+# Build artifacts
+bitgrain
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+
+# Rust / Cargo
+rust/target/
+
+# Logs and temp
 *.log
-*png
+*.txt
+
+# Output/test images (optional; remove if you want to track samples)
+*.png
+*.jpg
+*.jpeg
+*.pgm
+*.bg
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

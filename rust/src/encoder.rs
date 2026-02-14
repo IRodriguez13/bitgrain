@@ -1,16 +1,18 @@
 use crate::bitstream;
+use crate::block::Block;
 use crate::blockizer::Blockizer;
 use crate::dct;
 use crate::entropy;
 use crate::ffi::quantize_block;
+use rayon::prelude::*;
 
-/// .bg header: magic "BG" + version (1=grayscale, 2=RGB) + width u32 LE + height u32 LE (11 bytes).
-pub const BG_HEADER_SIZE: usize = 3 + 4 + 4;
+/// .bg header: magic "BG" + version (1=grayscale, 2=RGB) + width u32 LE + height u32 LE + quality u8 (12 bytes).
+/// Quality 0 in file means default 50 (backward compat with 11-byte header).
+pub const BG_HEADER_SIZE: usize = 3 + 4 + 4 + 1;
 const BG_MAGIC_GRAY: &[u8; 3] = b"BG\x01";
 const BG_MAGIC_RGB: &[u8; 3] = b"BG\x02";
 
 /// Standard JPEG luminance quantization table (quality ~50).
-/// Implicit zigzag order: rows 0..7, columns 0..7.
 pub fn default_quant_table() -> [i16; 64] {
     [
         16, 11, 10, 16, 24, 40, 51, 61,
@@ -22,6 +24,19 @@ pub fn default_quant_table() -> [i16; 64] {
         49, 64, 78, 87, 103, 121, 120, 101,
         72, 92, 95, 98, 112, 100, 103, 99,
     ]
+}
+
+/// Scale quant table by quality (1–100). Higher quality = less quantization.
+/// quality 50 ≈ default table; 100 = minimal loss; 1 = heavy compression.
+pub fn quant_table_for_quality(quality: u8) -> [i16; 64] {
+    let q = quality.clamp(1, 100) as i32;
+    let base = default_quant_table();
+    let mut out = [0i16; 64];
+    for i in 0..64 {
+        let v = (base[i] as i32 * q + 50) / 100;
+        out[i] = v.clamp(1, 255) as i16;
+    }
+    out
 }
 
 pub fn quantize(block: &mut [i16; 64], table: &[i16; 64]) {
@@ -37,6 +52,7 @@ fn write_header_version(
     version: u8,
     width: usize,
     height: usize,
+    quality: u8,
 ) {
     if (*out_position as usize) + BG_HEADER_SIZE > out_buffer.len() {
         return;
@@ -50,6 +66,23 @@ fn write_header_version(
     for b in (height as u32).to_le_bytes() {
         bitstream::write_byte(out_buffer, out_position, b);
     }
+    bitstream::write_byte(out_buffer, out_position, if quality == 0 { 50 } else { quality });
+}
+
+/// Encode a sequence of blocks (DCT, quantize in parallel, then RLE to buffer in order).
+fn encode_blocks(
+    blocks: &mut [Block],
+    table: &[i16; 64],
+    out_buffer: &mut [u8],
+    out_position: &mut i32,
+) {
+    blocks.par_iter_mut().for_each(|block| {
+        dct::dct(block);
+        quantize(&mut block.data, table);
+    });
+    for block in blocks.iter() {
+        entropy::encode_block_to_buffer(block, out_buffer, out_position);
+    }
 }
 
 /// Encode a single plane (width*height bytes) to buffer (no header).
@@ -57,48 +90,46 @@ fn encode_one_plane(
     plane: &[u8],
     width: usize,
     height: usize,
+    quality: u8,
     out_buffer: &mut [u8],
     out_position: &mut i32,
 ) {
-    let table = default_quant_table();
+    let table = quant_table_for_quality(quality);
     let blockizer = Blockizer::new(width, height);
     let mut blocks = blockizer.generate_blocks(plane);
-    for block in blocks.iter_mut() {
-        dct::dct(block);
-        quantize(&mut block.data, &table);
-        entropy::encode_block_to_buffer(block, out_buffer, out_position);
-    }
+    encode_blocks(&mut blocks, &table, out_buffer, out_position);
 }
 
 /// Encode a grayscale image (8 bpp) to output buffer.
+/// quality: 1–100 (higher = less quantization, default 85).
 pub fn encode_grayscale(
     image: &[u8],
     width: usize,
     height: usize,
+    quality: u8,
     out_buffer: &mut [u8],
     out_position: &mut i32,
 ) {
-    write_header_version(out_buffer, out_position, 1, width, height);
-    encode_one_plane(image, width, height, out_buffer, out_position);
+    write_header_version(out_buffer, out_position, 1, width, height, quality);
+    encode_one_plane(image, width, height, quality, out_buffer, out_position);
 }
 
 /// Encode an RGB image (24 bpp, R G B order per pixel) to output buffer.
-/// image.len() must be width * height * 3.
+/// image.len() must be width * height * 3. No intermediate plane allocation.
 pub fn encode_rgb(
     image: &[u8],
     width: usize,
     height: usize,
+    quality: u8,
     out_buffer: &mut [u8],
     out_position: &mut i32,
 ) {
-    write_header_version(out_buffer, out_position, 2, width, height);
-    let n = width * height;
-    let mut plane = vec![0u8; n];
+    write_header_version(out_buffer, out_position, 2, width, height, quality);
+    let table = quant_table_for_quality(quality);
+    let blockizer = Blockizer::new(width, height);
     for c in 0..3 {
-        for i in 0..n {
-            plane[i] = image[i * 3 + c];
-        }
-        encode_one_plane(&plane, width, height, out_buffer, out_position);
+        let mut blocks = blockizer.generate_blocks_rgb(image, c);
+        encode_blocks(&mut blocks, &table, out_buffer, out_position);
     }
 }
 
