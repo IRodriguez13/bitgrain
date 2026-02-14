@@ -5,17 +5,10 @@ extern "C" {
         block: *mut i16,
         table: *const i16,
     );
-
-    pub fn bitstream_write_byte(
-        buffer: *mut u8,
-        position: *mut i32,
-        value: u8,
-    );
 }
 
 /// Encode grayscale image.
-/// image: width*height bytes; out_buffer: output buffer; out_capacity: max size.
-/// Writes number of bytes generated to *out_len. Returns 0 on success, -1 on error.
+/// quality: 1–100 (higher = less quantization), 0 = default 85.
 #[no_mangle]
 pub extern "C" fn bitgrain_encode_grayscale(
     image: *const u8,
@@ -24,21 +17,23 @@ pub extern "C" fn bitgrain_encode_grayscale(
     out_buffer: *mut u8,
     out_capacity: u32,
     out_len: *mut i32,
+    quality: u8,
 ) -> i32 {
     if image.is_null() || out_buffer.is_null() || out_len.is_null() || out_capacity == 0 {
         return -1;
     }
+    let q = if quality == 0 { 85 } else { quality };
     let size = (width as usize).saturating_mul(height as usize);
     let image_slice = unsafe { slice::from_raw_parts(image, size) };
     let buffer_slice = unsafe { slice::from_raw_parts_mut(out_buffer, out_capacity as usize) };
     let mut pos: i32 = 0;
-    crate::encoder::encode_grayscale(image_slice, width as usize, height as usize, buffer_slice, &mut pos);
+    crate::encoder::encode_grayscale(image_slice, width as usize, height as usize, q, buffer_slice, &mut pos);
     unsafe { *out_len = pos };
     0
 }
 
 /// Encode an RGB image (24 bpp, R G B per pixel) to .bg stream.
-/// image: width*height*3 bytes.
+/// quality: 1–100, 0 = default 85.
 #[no_mangle]
 pub extern "C" fn bitgrain_encode_rgb(
     image: *const u8,
@@ -47,15 +42,17 @@ pub extern "C" fn bitgrain_encode_rgb(
     out_buffer: *mut u8,
     out_capacity: u32,
     out_len: *mut i32,
+    quality: u8,
 ) -> i32 {
     if image.is_null() || out_buffer.is_null() || out_len.is_null() || out_capacity == 0 {
         return -1;
     }
+    let q = if quality == 0 { 85 } else { quality };
     let size = (width as usize).saturating_mul(height as usize).saturating_mul(3);
     let image_slice = unsafe { slice::from_raw_parts(image, size) };
     let buffer_slice = unsafe { slice::from_raw_parts_mut(out_buffer, out_capacity as usize) };
     let mut pos: i32 = 0;
-    crate::encoder::encode_rgb(image_slice, width as usize, height as usize, buffer_slice, &mut pos);
+    crate::encoder::encode_rgb(image_slice, width as usize, height as usize, q, buffer_slice, &mut pos);
     unsafe { *out_len = pos };
     0
 }

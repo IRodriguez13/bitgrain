@@ -10,7 +10,6 @@ RUST_TARGET = $(RUST_DIR)/target/release/libbitgrain.a
 
 C_SRCS = \
 	c/quant.c \
-	c/bitstream.c \
 	c/image_loader.c \
 	c/image_writer.c \
 	main.c

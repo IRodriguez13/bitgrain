@@ -1,10 +1,13 @@
 [package]
 name = "bitgrain"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 
 [lib]
 crate-type = ["staticlib"]
+
+[dependencies]
+rayon = "1.10"
 
 [profile.release]
 lto = true
