@@ -10,7 +10,26 @@ uint8_t *bitgrain_load_grayscale(const char *path,
                                   uint32_t *out_height)
 {
     int w, h, n;
-    unsigned char *data = stbi_load(path, &w, &h, &n, 1); /* 1 = 1 canal (gris); RGB se convierte automático */
+    unsigned char *data = stbi_load(path, &w, &h, &n, 1); /* 1 = 1 channel (gray); RGB converted automatically */
+    if (!data) {
+        (void)n;
+        return NULL;
+    }
+    if (w <= 0 || h <= 0) {
+        stbi_image_free(data);
+        return NULL;
+    }
+    *out_width  = (uint32_t)w;
+    *out_height = (uint32_t)h;
+    return (uint8_t *)data;
+}
+
+uint8_t *bitgrain_load_rgb(const char *path,
+                           uint32_t *out_width,
+                           uint32_t *out_height)
+{
+    int w, h, n;
+    unsigned char *data = stbi_load(path, &w, &h, &n, 3);
     if (!data) {
         (void)n;
         return NULL;

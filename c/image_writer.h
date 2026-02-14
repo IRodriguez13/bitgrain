@@ -8,15 +8,17 @@ extern "C" {
 #endif
 
 /**
- * Escribe una imagen en escala de grises como JPEG.
- * pixels: width*height bytes, orden filas.
- * quality: 1-100 (típico 80-90).
- * Devuelve 0 si ok, distinto de 0 si error.
+ * Write an image as JPEG.
+ * pixels: width*height*comp bytes (row order, comp channels per pixel).
+ * comp: 1 = grayscale, 3 = RGB.
+ * quality: 1-100 (typical 80-90).
+ * Returns 0 on success, non-zero on error.
  */
 int bitgrain_write_jpg(const char *path,
                        const uint8_t *pixels,
                        uint32_t width,
                        uint32_t height,
+                       int comp,
                        int quality);
 
 #ifdef __cplusplus

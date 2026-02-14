@@ -32,7 +32,7 @@ pub fn dct(block: &mut Block) {
     }
 }
 
-/// IDCT (inversa de la DCT): coeficientes → píxeles centrados (-128..127).
+/// IDCT (inverse of DCT): coefficients → centered pixels (-128..127).
 pub fn idct(block: &mut Block) {
     let mut result = [0f64; 64];
 

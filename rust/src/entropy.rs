@@ -4,15 +4,15 @@ use crate::bitstream;
 /// EOB (End Of Block): run=0xFF, level=0
 const EOB_RUN: u8 = 0xFF;
 
-/// Codifica un bloque en RLE y escribe los (run, level) en el buffer.
-/// Formato por par: 1 byte run, 2 bytes level (i16 little-endian).
-/// Al final escribe EOB (0xFF, 0x00, 0x00).
+/// Encode a block in RLE and write (run, level) pairs to buffer.
+/// Format per pair: 1 byte run, 2 bytes level (i16 little-endian).
+/// Writes EOB (0xFF, 0x00, 0x00) at the end.
 pub fn encode_block_to_buffer(
     block: &Block,
     buffer: &mut [u8],
     position: &mut i32,
 ) {
-    // DC (1 valor i16)
+    // DC (single i16 value)
     if (*position as usize) + 2 <= buffer.len() {
         let dc = block.data[0];
         let dc_bytes = dc.to_le_bytes();
@@ -42,7 +42,7 @@ pub fn rle_encode(block: &Block) -> Vec<(u8, i16)> {
     let mut result = Vec::new();
     let mut zero_count = 0u8;
 
-    // empezamos desde 1 (AC), ignorando DC
+    // start from index 1 (AC), skip DC
     for &coef in block.data.iter().skip(1) {
         if coef == 0 {
             zero_count = zero_count.saturating_add(1);
