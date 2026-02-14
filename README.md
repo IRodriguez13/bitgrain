@@ -48,12 +48,25 @@ bitgrain foto.png                    # escribe foto.bg
 bitgrain -i entrada.bmp -o out.bg -y # -y sobrescribe si existe
 ```
 
-### Descomprimir (.bg → imagen PGM)
+### Descomprimir (.bg → imagen)
 
 ```bash
-bitgrain -d -i comprimido.bg -o reconstruida.pgm
-bitgrain -d comprimido.bg           # escribe comprimido.pgm
+bitgrain -d -i comprimido.bg -o reconstruida.jpg
+bitgrain -d comprimido.bg           # escribe comprimido.jpg
 ```
+
+### Round-trip (pipeline completo: comprimir + descomprimir en memoria)
+
+Un solo comando hace **todo el pipeline** sin generar archivo `.bg`: carga la imagen → comprime en memoria → descomprime → escribe la imagen reconstruida. Sirve para probar calidad o para validar encode/decode.
+
+```bash
+bitgrain -cd -i foto.jpg -o reconstruida.jpg
+bitgrain -cd img/imagen.png         # escribe img/imagen.jpg por defecto
+bitgrain -cd img/imagen.jpg         # igual: cualquier formato de entrada (jpg, png, bmp, etc.)
+```
+
+**Entrada:** cualquier imagen soportada por stb_image: JPEG, PNG, BMP, PGM, TGA, etc. No hace falta convertir a PGM; puedes usar directamente `bitgrain -cd ruta/imagen.jpg` o `bitgrain -cd ruta/imagen.png`.  
+**Salida:** por defecto se usa el mismo nombre base con extensión `.jpg`. Con `-o` eliges el archivo de salida. Para color debe ser `.jpg`; para escala de grises también puedes usar `.pgm`.
 
 ### Opciones
 
@@ -61,14 +74,15 @@ bitgrain -d comprimido.bg           # escribe comprimido.pgm
 |--------|-------------|
 | `-i <archivo>` | Archivo de entrada (imagen o .bg según modo) |
 | `-o <archivo>` | Archivo de salida |
-| `-d` | Modo descomprimir (.bg → PGM) |
+| `-d` | Modo descomprimir (.bg → JPG o PGM) |
+| `-cd` | Round-trip: comprimir + descomprimir en memoria, escribir imagen (sin .bg) |
 | `-y` | Sobrescribir salida sin preguntar |
 | `-h` | Ayuda |
 
-**Entrada al comprimir:** JPEG, PNG, BMP, PGM, TGA, etc. (vía [stb_image](https://github.com/nothings/stb)). Si la imagen es en color, se convierte automáticamente a escala de grises.
+**Entrada al comprimir / round-trip:** JPEG, PNG, BMP, PGM, TGA, etc. (vía [stb_image](https://github.com/nothings/stb)). Si la imagen es en color, se codifica en RGB (versión 2 del .bg); si es escala de grises, se codifica en un solo plano.
 
 **Salida al comprimir:** flujo `.bg` (con cabecera).  
-**Salida al descomprimir:** imagen PGM (escala de grises, 8 bpp).
+**Salida al descomprimir / round-trip:** JPG (recomendado para color) o PGM (escala de grises).
 
 ---
 
