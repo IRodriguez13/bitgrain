@@ -1,25 +1,70 @@
-CXX = g++
-CC  = gcc
+# ==============================
+# Toolchains
+# ==============================
 
-CXXFLAGS = -std=c++20 -Wall -Wextra -Iincludes
-CFLAGS   = -std=c11  -Wall -Wextra -Iincludes
+CC      = gcc
+CFLAGS  = -std=c11 -Wall -Wextra -Iincludes -Ic
 
-OBJS = \
-  encoder/block/block.o \
-  encoder/blockizer/blockizer.o \
-  encoder/encoder.o \
-  main.o
+RUST_DIR = rust
+RUST_TARGET = $(RUST_DIR)/target/release/libbitgrain.a
 
-all: bitgrain
+C_SRCS = \
+	c/quant.c \
+	c/bitstream.c \
+	c/image_loader.c \
+	main.c
 
-bitgrain: $(OBJS)
-	$(CXX) $(OBJS) -o bitgrain
+C_OBJS = $(C_SRCS:.c=.o)
 
-%.o: %.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+TARGET = bitgrain
+
+
+# ==============================
+# Default target
+# ==============================
+
+all: build
+
+
+# ==============================
+# Full build
+# ==============================
+
+bitgrain: $(RUST_TARGET) c
+	$(CC) $(C_OBJS) $(RUST_TARGET) -o $(TARGET) -lpthread -ldl -lm
+
+
+# ==============================
+# Rust build (el .a depende de Cargo, así make siempre compila si falta)
+# ==============================
+
+$(RUST_TARGET):
+	cd $(RUST_DIR) && cargo build --release
+
+
+# ==============================
+# C build
+# ==============================
+
+c: $(C_OBJS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
+
+.PHONY: all build c clean rebuild
+
+# ==============================
+# Clean
+# ==============================
+
 clean:
-	rm -f $(OBJS) bitgrain
+	rm -f $(C_OBJS) $(TARGET)
+	cd $(RUST_DIR) && cargo clean
+
+
+# ==============================
+# Rebuild
+# ==============================
+
+rebuild: clean build
