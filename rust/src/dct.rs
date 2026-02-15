@@ -1,3 +1,6 @@
+//! DCT/IDCT for 8×8 blocks. Reference implementation.
+//! Priority: optimize encode/decode (separable DCT/SIMD) so Bitgrain is faster than WebP/AVIF with similar quality.
+
 use crate::block::Block;
 use std::f64::consts::PI;
 
@@ -52,57 +55,34 @@ fn idct_reference(coef: &[i16; 64]) -> [i16; 64] {
     out
 }
 
-// Fast separable DCT/IDCT with precomputed cos table
-
-#[rustfmt::skip]
-const COEF: [[f64; 8]; 8] = [
-    [1.0, 0.98078528, 0.92387953, 0.83146961, 0.70710678, 0.55557023, 0.38268343, 0.19509032],
-    [1.0, 0.83146961, 0.38268343, -0.19509032, -0.70710678, -0.98078528, -0.92387953, -0.55557023],
-    [1.0, 0.55557023, -0.38268343, -0.98078528, -0.70710678, 0.19509032, 0.92387953, 0.83146961],
-    [1.0, 0.19509032, -0.92387953, -0.83146961, 0.38268343, 0.98078528, 0.55557023, -0.70710678],
-    [1.0, -0.19509032, -0.92387953, 0.83146961, 0.38268343, -0.98078528, 0.55557023, 0.70710678],
-    [1.0, -0.55557023, -0.38268343, 0.98078528, -0.70710678, -0.19509032, 0.92387953, -0.83146961],
-    [1.0, -0.83146961, 0.38268343, 0.19509032, -0.70710678, 0.98078528, -0.92387953, 0.55557023],
-    [1.0, -0.98078528, 0.92387953, -0.83146961, 0.70710678, -0.55557023, 0.38268343, -0.19509032],
-];
-
-const C0: f64 = 0.7071067811865476;
-
+/// Forward 8×8 DCT. Uses C SIMD (c/dct.c) when linked; reference for tests.
 #[inline]
-fn scale(u: usize) -> f64 {
-    if u == 0 { C0 } else { 1.0 }
-}
-
-fn dct_1d(input: &[f64; 8], output: &mut [f64; 8]) {
-    for u in 0..8 {
-        let mut sum = 0.0;
-        for x in 0..8 {
-            sum += input[x] * COEF[x][u];
-        }
-        output[u] = 0.5 * scale(u) * sum;
-    }
-}
-
-fn idct_1d(input: &[f64; 8], output: &mut [f64; 8]) {
-    for x in 0..8 {
-        let mut sum = 0.0;
-        for u in 0..8 {
-            sum += scale(u) * input[u] * COEF[x][u];
-        }
-        output[x] = 0.5 * sum;
-    }
-}
-
-/// Forward 8x8 DCT. Uses reference implementation (no blocky artifacts).
 pub fn dct(block: &mut Block) {
-    let out = dct_reference(block);
-    block.data = out;
+    #[cfg(not(test))]
+    {
+        unsafe { crate::ffi::bitgrain_dct_block(block.data.as_mut_ptr()) };
+        return;
+    }
+    #[cfg(test)]
+    {
+        let out = dct_reference(block);
+        block.data = out;
+    }
 }
 
-/// IDCT: coefficients → centered pixels (-128..127). Uses reference (no blocky artifacts).
+/// IDCT: coefficients → centered pixels (-128..127). Uses C SIMD when linked.
+#[inline]
 pub fn idct(block: &mut Block) {
-    let out = idct_reference(&block.data);
-    block.data = out;
+    #[cfg(not(test))]
+    {
+        unsafe { crate::ffi::bitgrain_idct_block(block.data.as_mut_ptr()) };
+        return;
+    }
+    #[cfg(test)]
+    {
+        let out = idct_reference(&block.data);
+        block.data = out;
+    }
 }
 
 // Tests: fast DCT/IDCT matches reference and round-trips.
@@ -119,8 +99,8 @@ mod tests {
 
     #[test]
     fn dct_matches_reference() {
-        let mut block = block_from_slice(&[
-            -128, 0, 1, 2, 3, 4, 5, 6,
+        let input = [
+            -128i16, 0, 1, 2, 3, 4, 5, 6,
             7, 8, 9, 10, 11, 12, 13, 14,
             15, 16, 17, 18, 19, 20, 21, 22,
             23, 24, 25, 26, 27, 28, 29, 30,
@@ -128,13 +108,15 @@ mod tests {
             39, 40, 41, 42, 43, 44, 45, 46,
             47, 48, 49, 50, 51, 52, 53, 54,
             55, 56, 57, 58, 59, 60, 61, 62,
-        ]);
+        ];
+        let mut block = block_from_slice(&input);
         let expected = dct_reference(&block);
         dct(&mut block);
         for i in 0..64 {
             assert_eq!(block.data[i], expected[i], "dct mismatch at {}", i);
         }
     }
+
 
     #[test]
     fn idct_matches_reference() {

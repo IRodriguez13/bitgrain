@@ -11,4 +11,5 @@ fi
 
 echo "Removing $DEST/$BINARY (requires sudo)"
 sudo rm -f "$DEST/$BINARY"
-echo "Done."
+echo "\nDone."
+echo "Thank you for using Bitgrain."

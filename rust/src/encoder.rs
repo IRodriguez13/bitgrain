@@ -6,11 +6,12 @@ use crate::entropy;
 use crate::ffi::quantize_block;
 use rayon::prelude::*;
 
-/// .bg header: magic "BG" + version (1=grayscale, 2=RGB) + width u32 LE + height u32 LE + quality u8 (12 bytes).
+/// .bg header: magic "BG" + version (1=gray, 2=RGB, 3=RGBA) + width u32 LE + height u32 LE + quality u8 (12 bytes).
 /// Quality 0 in file means default 50 (backward compat with 11-byte header).
 pub const BG_HEADER_SIZE: usize = 3 + 4 + 4 + 1;
 const BG_MAGIC_GRAY: &[u8; 3] = b"BG\x01";
 const BG_MAGIC_RGB: &[u8; 3] = b"BG\x02";
+const BG_MAGIC_RGBA: &[u8; 3] = b"BG\x03";
 
 /// Standard JPEG luminance quantization table (quality ~50).
 pub fn default_quant_table() -> [i16; 64] {
@@ -114,8 +115,34 @@ pub fn encode_grayscale(
     encode_one_plane(image, width, height, quality, out_buffer, out_position);
 }
 
+/// Write optional ICC trailer: "BGx" + chunk type 1 + length LE + data.
+fn write_icc_trailer(
+    out_buffer: &mut [u8],
+    out_position: &mut i32,
+    icc: Option<&[u8]>,
+) {
+    let Some(icc_data) = icc else { return };
+    if icc_data.is_empty() {
+        return;
+    }
+    let pos = *out_position as usize;
+    let need = 3 + 1 + 4 + icc_data.len(); /* "BGx" + type + len + data */
+    if pos + need > out_buffer.len() {
+        return;
+    }
+    bitstream::write_byte(out_buffer, out_position, b'B');
+    bitstream::write_byte(out_buffer, out_position, b'G');
+    bitstream::write_byte(out_buffer, out_position, b'x');
+    bitstream::write_byte(out_buffer, out_position, 1); /* chunk type: ICC */
+    for b in (icc_data.len() as u32).to_le_bytes() {
+        bitstream::write_byte(out_buffer, out_position, b);
+    }
+    bitstream::write_bytes(out_buffer, out_position, icc_data);
+}
+
 /// Encode an RGB image (24 bpp, R G B order per pixel) to output buffer.
 /// image.len() must be width * height * 3. No intermediate plane allocation.
+/// icc: optional ICC profile to embed (for color management).
 pub fn encode_rgb(
     image: &[u8],
     width: usize,
@@ -123,6 +150,7 @@ pub fn encode_rgb(
     quality: u8,
     out_buffer: &mut [u8],
     out_position: &mut i32,
+    icc: Option<&[u8]>,
 ) {
     write_header_version(out_buffer, out_position, 2, width, height, quality);
     let table = quant_table_for_quality(quality);
@@ -131,5 +159,28 @@ pub fn encode_rgb(
         let mut blocks = blockizer.generate_blocks_rgb(image, c);
         encode_blocks(&mut blocks, &table, out_buffer, out_position);
     }
+    write_icc_trailer(out_buffer, out_position, icc);
+}
+
+/// Encode an RGBA image (32 bpp, R G B A order per pixel) to output buffer.
+/// image.len() must be width * height * 4.
+/// icc: optional ICC profile to embed (for color management).
+pub fn encode_rgba(
+    image: &[u8],
+    width: usize,
+    height: usize,
+    quality: u8,
+    out_buffer: &mut [u8],
+    out_position: &mut i32,
+    icc: Option<&[u8]>,
+) {
+    write_header_version(out_buffer, out_position, 3, width, height, quality);
+    let table = quant_table_for_quality(quality);
+    let blockizer = Blockizer::new(width, height);
+    for c in 0..4 {
+        let mut blocks = blockizer.generate_blocks_rgba(image, c);
+        encode_blocks(&mut blocks, &table, out_buffer, out_position);
+    }
+    write_icc_trailer(out_buffer, out_position, icc);
 }
 

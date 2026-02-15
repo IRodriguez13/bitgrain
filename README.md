@@ -1,97 +1,108 @@
 # Bitgrain
 
-**v1.0.0** — Image compressor (JPEG-like). Encodes images to a custom `.bg` stream; decodes back to pixels or standard image files. Grayscale and RGB. Single CLI and C API for encode/decode.
+Image compressor (JPEG-like). Encodes to a custom `.bg` stream; decodes to pixels or standard image files. Grayscale, RGB, RGBA. CLI and C API.
 
 ## Build
 
-- **Requirements:** Rust (stable), GCC (C11), make.
+Requirements: Rust (stable), GCC (C11), make, **libwebp** (headers + lib).
 
 ```bash
-make build
+./setup.sh
 ```
 
-Produces the `bitgrain` binary. `make clean` then `make build` for a full rebuild.
+El script instala dependencias si faltan. Manual:
 
----
+| Sistema | Comando |
+|---------|---------|
+| Debian/Ubuntu | `sudo apt install libwebp-dev` |
+| Fedora/RHEL | `sudo dnf install libwebp-devel` |
+| macOS | `brew install webp` |
+
+Luego:
+
+```bash
+make bitgrain
+```
+
+Install: `sudo make install` (or `PREFIX=$HOME/.local make install`). Installs `bitgrain`, `include/bitgrain/encoder.h`, `lib/libbitgrain.a`.
+
+Portable build: `make CFLAGS_NATIVE= RUSTFLAGS_NATIVE= bitgrain`.
 
 ## CLI
 
 | Option | Description |
 |--------|-------------|
-| `-i <file>` | Input (image or .bg depending on mode) |
-| `-o <file>` | Output (format from extension: .jpg, .png, .pgm) |
+| `-i <path>` | Input file or directory |
+| `-o <path>` | Output file or directory |
 | `-d` | Decode: .bg → image |
-| `-cd` | Round-trip: encode + decode in memory, write image (no .bg file) |
+| `-cd` | Round-trip: encode + decode in memory, write image |
 | `-q <1-100>` | Encode quality (default 85) |
-| `-Q <1-100>` | Output image quality for decode/round-trip (default 85, for JPG) |
-| `-y` | Overwrite output without prompting |
-| `-v` | Print version and exit |
-| `-h` | Help |
+| `-Q <1-100>` | Output JPG/WebP quality (default 85) |
+| `-m` | Round-trip: print PSNR and SSIM |
+| `-y` | Overwrite |
+| `-v`, `-h` | Version, help |
 
-**Encode (image → .bg):**
+Input formats: JPEG, PNG, BMP, GIF, TGA, PGM, PSD, HDR, WebP (stb_image + libwebp). Output: extension of `-o` (.jpg, .png, .pgm, .webp). **Transparencia/canales alfa:** RGBA soportado (PNG/WebP con alpha → .bg versión 3; decode → 4 canales).
 
-```bash
-bitgrain -i foto.jpg -o out.bg
-bitgrain foto.png              # writes foto.bg
-```
+## Format .bg
 
-**Decode (.bg → image):**
-
-```bash
-bitgrain -d -i out.bg -o out.jpg
-bitgrain -d out.bg             # writes out.jpg by default
-```
-
-**Round-trip (image → encode → decode → image):**
-
-```bash
-bitgrain -cd -i foto.jpg -o reconstruida.jpg
-```
-
-Input: JPEG, PNG, BMP, PGM, TGA, etc. (via [stb_image](https://github.com/nothings/stb)). Output format is determined by the `-o` extension (.jpg, .png, .pgm).
-
----
-
-## Format .bg (v1.0)
-
-- **Header (12 bytes):** magic `"BG"` (2), version (1: grayscale, 2: RGB), width (4, LE), height (4, LE), quality (1, 1–100; 0 means 50).
-- **Payload:** blocks in scan order. Per block: DC (2 bytes int16 LE), then AC in zigzag as (run: 1 byte, level: 2 bytes int16 LE). EOB: run=0xFF, level=0.
-
-Dimensions need not be multiples of 8; edge blocks are truncated.
-
----
-
-## Pipeline (summary)
-
-**Encode:** Load image → 8×8 blocks (centered: −128) → DCT → quantize (table scaled by quality) → RLE (DC + zigzag AC) → write header + stream.
-
-**Decode:** Read header → RLE → dequantize → IDCT → +128, clamp → reassemble image.
-
-DCT/IDCT use a reference implementation. Parallel blocks (Rayon) for encode and decode.
-
----
+Header 12 bytes: magic "BG", version (1=gray, 2=RGB, 3=RGBA), width (4 LE), height (4 LE), quality (1). Payload: blocks in scan order; per block DC (2 bytes), AC zigzag (run 1 byte, level 2 bytes), EOB run=0xFF level=0.
 
 ## C API
 
-Declared in `includes/encoder.h`. Link with `rust/target/release/libbitgrain.a` and C objects; add `-lpthread -ldl -lm`.
+`includes/encoder.h`. Encode: `bitgrain_encode_grayscale`, `bitgrain_encode_rgb`, `bitgrain_encode_rgba`. Decode: `bitgrain_decode(buf, size, pixels, cap, &w, &h, &channels)`. Channels 1, 3, or 4. Link `libbitgrain.a` and C objects; add `-lpthread -ldl -lm -lwebp`. Load/save helpers in `c/image_loader.h`, `c/image_writer.h`.
 
-**Encode (grayscale):** `bitgrain_encode_grayscale(pixels, width, height, out_buf, out_cap, &out_len, quality)`  
-**Decode (grayscale):** `bitgrain_decode_grayscale(bg_buf, bg_size, pixels, pixels_cap, &width, &height)`
+## Prioridades
 
-RGB variants and helpers for loading/writing images are in the same header. Intended use: backend for capture pipelines (compress to .bg for storage/transfer; decode to pixels or export to JPEG/PNG for display).
+- **Optimización encode/decode:** Cuantización con SIMD (SSE2/NEON) en C; DCT/IDCT en referencia. Objetivo: ser más rápido que WebP/AVIF con calidad similar.
+- **Transparencia y canales alfa:** **Hecho.** PNG y WebP con alpha se cargan como RGBA; .bg versión 3 (4 canales); decode devuelve 1, 3 o 4 canales según cabecera.
 
----
+## Integración
+
+- **Crate Rust:** `rust/Cargo.toml` listo para publicar en crates.io (description, license, repository, keywords). Publicar con `cargo publish` desde `rust/`.
+- **Librería C:** `make install` instala estática `lib/libbitgrain.a` y cabeceras. Opcional: se genera también `libbitgrain.so`/`.dylib` (cdylib) para bindings; `make lib-shared` para comprobar.
+- **Bindings Python:** `bindings/python/bitgrain.py` (ctypes). Requiere `libbitgrain.so`/`.dylib` (ej. `make bitgrain`). Uso: cargar imagen con Pillow, pasar bytes a `encode_rgb`/`encode_rgba`/`decode`.
+- **Bindings Go:** `bindings/go/` (cgo). Desde repo: `make bitgrain`; luego en `bindings/go`: `CGO_ENABLED=1 go build`. Ver `bindings/go/README.md`.
 
 ## Layout
 
 ```
 bitgrain/
-├── main.c           # CLI
+├── main.c           # Orquestación CLI
 ├── Makefile
 ├── includes/encoder.h
-├── c/               # quant, image_loader, image_writer (stb)
-└── rust/src/        # lib, ffi, encoder, decoder, block, blockizer, dct, entropy, bitstream, zigzag
+├── c/               # Modular: cli, path_utils, encode_cli, decode_cli, roundtrip_cli,
+│                    # bg_utils, config, quant (SIMD), image_loader, image_writer, metrics, webp_io, platform
+├── rust/            # encoder, decoder, dct, entropy, ffi; Cargo.toml listo crates.io
+├── tests/           # integration.sh (CLI end-to-end)
+└── bindings/
+    ├── python/      # bitgrain.py (ctypes)
+    └── go/          # bitgrain.go (cgo)
 ```
+
+Tests: `./tests/integration.sh` (requiere build previo con libwebp).
+
+## Formato .bg e interoperabilidad
+
+Especificación pública en [FORMAT.md](FORMAT.md). Permite implementar lectores/escritores .bg en terceros.
+
+## Benchmark
+
+Comparar Bitgrain vs JPEG/WebP (tamaño y tiempo):
+
+```bash
+./scripts/benchmark.sh /ruta/imagen.jpg 85
+```
+
+Requiere: `cjpeg`/`djpeg` (libjpeg), `cwebp`/`dwebp` (libwebp).
+
+## Roadmap
+
+- **Formatos:** AVIF (libavif), TIFF (libtiff), RAW (opcional).
+- **DCT/IDCT SIMD:** Implementado en `c/dct.c` (SSE2/NEON).
+- **Streaming:** `decode_rle_one_block` permite decodificación bloque a bloque.
+- **ICC/color management:** Extensión futura en FORMAT.md (v4+).
+- **Progressive decode:** Reordenado de bitstream (roadmap).
 
 ---
 

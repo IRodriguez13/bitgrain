@@ -23,6 +23,14 @@ uint8_t *bitgrain_load_rgb(const char *path,
                            uint32_t *out_width,
                            uint32_t *out_height);
 
+/**
+ * Load an image as RGBA (4 channels, R G B A order). Opaque if no alpha in file.
+ * Returns width*height*4 bytes. Caller must free with bitgrain_image_free().
+ */
+uint8_t *bitgrain_load_rgba(const char *path,
+                            uint32_t *out_width,
+                            uint32_t *out_height);
+
 void bitgrain_image_free(void *pixels);
 
 #ifdef __cplusplus

@@ -13,6 +13,10 @@ rust/target/
 *.log
 *.txt
 
+# Output directories
+test_out/
+bench_out/
+
 # Output/test images (optional; remove if you want to track samples)
 *.png
 *.jpg
