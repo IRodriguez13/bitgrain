@@ -1,0 +1,211 @@
+.TH BITGRAIN 1 "2026-02-23" "Bitgrain 0.0.1" "User Commands"
+.SH NAME
+bitgrain \- JPEG-like image compressor using the .bg format
+.SH SYNOPSIS
+.B bitgrain
+.RI [ options ]
+.RI [ file ... ]
+.PP
+Encode (default):
+.B bitgrain
+.RB [ \-q
+.IR 1-100 ]
+.BR \-i " " in
+.BR \-o " " out.bg
+.PP
+Decode:
+.B bitgrain
+.B \-d
+.BR \-i " " in.bg
+.BR \-o " " out.(jpg|png|pgm|webp)
+.PP
+Round-trip (in-memory encode+decode):
+.B bitgrain
+.B \-cd
+.RB [ \-q
+.IR 1-100 ]
+.RB [ \-Q
+.IR 1-100 ]
+.RB [ \-m ]
+.BR \-i " " in
+.BR \-o " " out
+.SH DESCRIPTION
+Bitgrain is a block-based image codec (JPEG-like) that encodes images into a custom
+.BR .bg
+stream and can decode
+.BR .bg
+back into pixels or standard image files.
+It supports grayscale (1 channel), RGB (3 channels), and RGBA (4 channels).
+.PP
+The CLI can operate in three modes:
+.RS
+.IP "1." 3
+Encode (default): image \(-> .bg
+.IP "2." 3
+Decode:
+.BR .bg " \(-> image"
+.IP "3." 3
+Round-trip:
+.BR image " \(-> image"
+(no
+.BR .bg
+file written)
+.RE
+.SH OPTIONS
+.TP
+.BI \-i " " path
+Input file or directory.
+With multiple inputs, Bitgrain will expand directories and process all matching files.
+.TP
+.BI \-o " " path
+Output file or directory.
+When multiple inputs are provided, the output must be a directory (default:
+.BR out ).
+.TP
+.B \-d
+Decode mode:
+.BR .bg " \(-> image".
+.TP
+.B \-cd
+Round-trip mode (compress + decompress in memory). No
+.BR .bg
+file is written.
+.TP
+.BI \-q " " 1-100
+Quality for encoding into
+.BR .bg
+(default 85).
+Higher values generally increase quality and output size.
+.TP
+.BI \-Q " " 1-100
+Quality for writing JPEG/WebP output images (default 85).
+Only applies when the chosen output format is lossy.
+.TP
+.B \-m
+In round-trip mode, print quality metrics (PSNR and SSIM) versus the original.
+.TP
+.B \-y
+Overwrite existing output files.
+Without this flag, Bitgrain avoids overwriting by choosing an alternative path.
+.TP
+.B \-v
+Print version, author, license, and upstream URL, then exit.
+.TP
+.B \-h
+Print help, then exit.
+.SH INPUT AND OUTPUT
+.SS Input formats
+Input images are loaded via stb_image and libwebp.
+Common supported formats include JPEG, PNG, BMP, GIF, TGA, PGM, PSD, HDR, and WebP.
+.SS Output formats
+When writing an image (decode/round-trip), the output format is chosen by the extension
+of
+.BR \-o :
+.BR .jpg / .jpeg ,
+.BR .png ,
+.BR .pgm
+(grayscale only),
+and
+.BR .webp .
+.PP
+When encoding (default mode), output is typically a
+.BR .bg
+file.
+If
+.BR \-o
+is omitted for a single input, Bitgrain writes
+.BR <input>.bg .
+.SH MULTIPLE INPUTS
+You can pass inputs either with
+.BR \-i
+or as positional arguments:
+.PP
+.RS
+.B bitgrain -cd -o outdir img1.png img2.jpg
+.RE
+.PP
+If multiple inputs are provided, Bitgrain writes outputs into a directory.
+If
+.BR \-o
+is omitted, it defaults to
+.BR out .
+.SH FORMAT
+The
+.BR .bg
+format is a block-based stream using 8\(mu8 DCT, quantization, and RLE entropy coding.
+The header is 12 bytes:
+.RS
+.IP "\(bu" 2
+Magic "BG" (0x42 0x47)
+.IP "\(bu" 2
+Version: 1=grayscale, 2=RGB, 3=RGBA
+.IP "\(bu" 2
+Width (uint32 little-endian)
+.IP "\(bu" 2
+Height (uint32 little-endian)
+.IP "\(bu" 2
+Quality (1\(en100; 0 means default)
+.RE
+.PP
+Blocks are stored in scan order. Each block stores a DC coefficient followed by RLE
+(run, level) pairs in zigzag order, terminated by an end-of-block marker.
+.PP
+Some streams may include an optional trailer ("BGx") for an ICC profile.
+See
+.BR FORMAT.md
+in the source tree for the full specification.
+.SH EXAMPLES
+Encode an image to
+.BR .bg :
+.PP
+.RS
+.B bitgrain -i input.png -o output.bg
+.RE
+.PP
+Decode a
+.BR .bg
+file into a PNG:
+.PP
+.RS
+.B bitgrain -d -i input.bg -o output.png
+.RE
+.PP
+Round-trip and write JPEG output at quality 90:
+.PP
+.RS
+.B bitgrain -cd -q 85 -Q 90 -i input.png -o output.jpg
+.RE
+.PP
+Round-trip multiple images, write into a directory, and print metrics:
+.PP
+.RS
+.B bitgrain -cd -m -o out images/
+.RE
+.SH FILES
+.TP
+.I out/
+Default output directory when multiple inputs are provided and
+.BR \-o
+is not specified.
+.TP
+.I FORMAT.md
+Specification of the
+.BR .bg
+format (source distribution).
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Failure (invalid arguments, I/O error, encode/decode failure).
+.SH AUTHOR
+Iván Ezequiel Rodriguez.
+.SH LICENSE
+GPL\-3.0\-or\-later.
+.SH SEE ALSO
+.BR bitgrain (3)
+(if installed as a library),
+.BR cwebp (1),
+.BR djpeg (1),
+.BR man (1)
