@@ -2,7 +2,14 @@
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_STATIC
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#endif
 #include "stb_image_write.h"
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 #include <stdlib.h>
 #include <string.h>
@@ -46,6 +53,28 @@ int bitgrain_write_png(const char *path,
     if (!path || !pixels) return -1;
     if (comp != 1 && comp != 3 && comp != 4) comp = 1;
     return stbi_write_png(path, (int)width, (int)height, comp, pixels, 0) ? 0 : -1;
+}
+
+int bitgrain_write_bmp(const char *path,
+                       const uint8_t *pixels,
+                       uint32_t width,
+                       uint32_t height,
+                       int comp)
+{
+    if (!path || !pixels) return -1;
+    if (comp != 1 && comp != 3 && comp != 4) comp = 1;
+    return stbi_write_bmp(path, (int)width, (int)height, comp, pixels) ? 0 : -1;
+}
+
+int bitgrain_write_tga(const char *path,
+                       const uint8_t *pixels,
+                       uint32_t width,
+                       uint32_t height,
+                       int comp)
+{
+    if (!path || !pixels) return -1;
+    if (comp != 1 && comp != 3 && comp != 4) comp = 1;
+    return stbi_write_tga(path, (int)width, (int)height, comp, pixels) ? 0 : -1;
 }
 
 #include <stdio.h>

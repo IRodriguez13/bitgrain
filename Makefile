@@ -4,7 +4,8 @@
 
 CC      = gcc
 RUST_DIR = rust
-RUST_TARGET = $(RUST_DIR)/target/release/libbitgrain.a
+# Cargo emits the staticlib under deps/ (not next to libbitgrain.so).
+RUST_TARGET = $(RUST_DIR)/target/release/deps/libbitgrain.a
 TARGET  = bitgrain
 
 # Base C flags
@@ -88,7 +89,7 @@ bitgrain: $(RUST_TARGET) $(C_OBJS)
 # ==============================
 
 $(RUST_TARGET):
-	cd $(RUST_DIR) && RUSTFLAGS="$(RUSTFLAGS_NATIVE)" cargo build --release
+	cd $(RUST_DIR) && CARGO_TARGET_DIR="$(abspath $(RUST_DIR)/target)" RUSTFLAGS="$(RUSTFLAGS_NATIVE)" cargo build --release
 
 # Shared library for Python/Go bindings (Rust cdylib: libbitgrain.so or .dylib)
 RUST_SO = $(RUST_DIR)/target/release/libbitgrain.so
@@ -111,15 +112,34 @@ c: $(C_OBJS)
 main.o: main.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-.PHONY: all build c clean install rebuild lib-shared
+.PHONY: all build c bench clean install rebuild lib-shared build-portable build-avx2 bench-avx2
+
+# ==============================
+# Bench (standalone profiler)
+# ==============================
+
+BENCH_TARGET = bitgrain-bench
+BENCH_CFLAGS = -std=c11 -Wall -Wextra -Iincludes -Ic -Ibench -O3 -DNDEBUG $(CFLAGS_NATIVE)
+BENCH_SRCS   = bench/bench.c bench/main.c c/dct.c c/quant.c c/metrics.c
+BENCH_OBJS   = $(BENCH_SRCS:.c=.o)
+
+bench: $(RUST_TARGET) $(BENCH_OBJS)
+	$(CC) $(BENCH_OBJS) $(RUST_TARGET) -o $(BENCH_TARGET) $(LDFLAGS)
+	@echo "Built: $(BENCH_TARGET)"
+
+bench/bench.o: bench/bench.c bench/bench.h
+	$(CC) $(BENCH_CFLAGS) -c $< -o $@
+
+bench/main.o: bench/main.c bench/bench.h
+	$(CC) $(BENCH_CFLAGS) -c $< -o $@
 
 # ==============================
 # Clean
 # ==============================
 
 clean:
-	rm -f $(C_OBJS) c/webp_io.o $(TARGET)
-	cd $(RUST_DIR) && cargo clean
+	rm -f $(C_OBJS) c/webp_io.o $(TARGET) $(BENCH_TARGET) $(BENCH_OBJS)
+	cd $(RUST_DIR) && CARGO_TARGET_DIR="$(abspath $(RUST_DIR)/target)" cargo clean
 
 # ==============================
 # Install (C library + CLI)
@@ -142,3 +162,20 @@ install: bitgrain
 # ==============================
 
 rebuild: clean build
+
+# ==============================
+# CPU-specific optimization presets (opt-in)
+# ==============================
+# Portable baseline (safe to distribute across CPUs):
+#   make build-portable
+build-portable:
+	$(MAKE) CFLAGS_NATIVE= RUSTFLAGS_NATIVE= build
+
+# x86_64 AVX2/FMA preset (host must support these ISA extensions):
+#   make build-avx2
+#   make bench-avx2
+build-avx2:
+	$(MAKE) CFLAGS_NATIVE="-mavx2 -mfma -mbmi2 -mlzcnt" RUSTFLAGS_NATIVE="-C target-feature=+avx2,+fma,+bmi2,+lzcnt" build
+
+bench-avx2:
+	$(MAKE) CFLAGS_NATIVE="-mavx2 -mfma -mbmi2 -mlzcnt" RUSTFLAGS_NATIVE="-C target-feature=+avx2,+fma,+bmi2,+lzcnt" bench

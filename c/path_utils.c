@@ -7,7 +7,8 @@
 #include <stdio.h>
 
 static const char *const IMAGE_EXTS[] = {
-    ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tga", ".pgm", ".psd", ".hdr", ".webp"
+    ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tga", ".pgm", ".ppm", ".pnm", ".pbm",
+    ".psd", ".hdr", ".tif", ".tiff", ".webp"
 };
 static const size_t NUM_IMAGE_EXTS = sizeof(IMAGE_EXTS) / sizeof(IMAGE_EXTS[0]);
 

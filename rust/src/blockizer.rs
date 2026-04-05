@@ -1,4 +1,5 @@
 use crate::block::Block;
+use rayon::prelude::*;
 
 pub struct Blockizer {
     width: usize,
@@ -10,62 +11,66 @@ impl Blockizer {
         Self { width, height }
     }
 
+    /// Generate 8×8 blocks from a grayscale plane. Parallel via Rayon.
     pub fn generate_blocks(&self, image: &[u8]) -> Vec<Block> {
-        let mut blocks = Vec::new();
+        let w = self.width;
+        let h = self.height;
+        let blocks_wide = (w + 7) / 8;
+        let blocks_high = (h + 7) / 8;
+        let num_blocks = blocks_wide * blocks_high;
 
-        for by in (0..self.height).step_by(8) {
-            for bx in (0..self.width).step_by(8) {
-
+        (0..num_blocks)
+            .into_par_iter()
+            .map(|idx| {
+                let bx = (idx % blocks_wide) * 8;
+                let by = (idx / blocks_wide) * 8;
                 let mut block = [0i16; 64];
-
                 for y in 0..8 {
+                    let iy = (by + y).min(h.saturating_sub(1));
+                    let row_base = iy * w;
                     for x in 0..8 {
-                        let ix = (bx + x).min(self.width.saturating_sub(1));
-                        let iy = (by + y).min(self.height.saturating_sub(1));
-
-                        let index = iy * self.width + ix;
-
-                        block[y * 8 + x] =
-                            image[index] as i16 - 128; // centering
+                        let ix = (bx + x).min(w.saturating_sub(1));
+                        block[y * 8 + x] = image[row_base + ix] as i16 - 128;
                     }
                 }
-
-                blocks.push(Block { data: block });
-            }
-        }
-
-        blocks
+                Block { data: block }
+            })
+            .collect()
     }
 
-    /// Generate blocks for one channel from interleaved RGB (image.len() == width*height*3).
-    /// channel in 0..3. No separate plane allocation.
+    /// Generate blocks for one channel from interleaved RGB. Parallel via Rayon.
     pub fn generate_blocks_rgb(&self, image: &[u8], channel: usize) -> Vec<Block> {
-        self.generate_blocks_interleaved(image, 3, channel)
+        self.generate_blocks_interleaved_par(image, 3, channel)
     }
 
-    /// Generate blocks for one channel from interleaved RGBA (image.len() == width*height*4).
-    /// channel in 0..4.
+    /// Generate blocks for one channel from interleaved RGBA. Parallel via Rayon.
     pub fn generate_blocks_rgba(&self, image: &[u8], channel: usize) -> Vec<Block> {
-        self.generate_blocks_interleaved(image, 4, channel)
+        self.generate_blocks_interleaved_par(image, 4, channel)
     }
 
-    fn generate_blocks_interleaved(&self, image: &[u8], stride: usize, channel: usize) -> Vec<Block> {
-        let mut blocks = Vec::new();
-        for by in (0..self.height).step_by(8) {
-            for bx in (0..self.width).step_by(8) {
+    fn generate_blocks_interleaved_par(&self, image: &[u8], stride: usize, channel: usize) -> Vec<Block> {
+        let w = self.width;
+        let h = self.height;
+        let blocks_wide = (w + 7) / 8;
+        let blocks_high = (h + 7) / 8;
+        let num_blocks = blocks_wide * blocks_high;
+
+        (0..num_blocks)
+            .into_par_iter()
+            .map(|idx| {
+                let bx = (idx % blocks_wide) * 8;
+                let by = (idx / blocks_wide) * 8;
                 let mut block = [0i16; 64];
                 for y in 0..8 {
+                    let iy = (by + y).min(h.saturating_sub(1));
+                    let row_base = iy * w;
                     for x in 0..8 {
-                        let ix = (bx + x).min(self.width.saturating_sub(1));
-                        let iy = (by + y).min(self.height.saturating_sub(1));
-                        let index = (iy * self.width + ix) * stride + channel;
-                        block[y * 8 + x] = image[index] as i16 - 128;
+                        let ix = (bx + x).min(w.saturating_sub(1));
+                        block[y * 8 + x] = image[(row_base + ix) * stride + channel] as i16 - 128;
                     }
                 }
-                blocks.push(Block { data: block });
-            }
-        }
-        blocks
+                Block { data: block }
+            })
+            .collect()
     }
 }
-

@@ -7,6 +7,11 @@
 #include <png.h>
 #include <stdio.h>
 
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wclobbered"
+#endif
+
 uint8_t *bitgrain_load_icc_from_png(const char *path, uint32_t *out_len)
 {
     FILE *f;
@@ -122,6 +127,10 @@ cleanup:
     fclose(f);
     return ok;
 }
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 #else
 

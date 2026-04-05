@@ -1,6 +1,6 @@
 [package]
 name = "bitgrain"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 description = "JPEG-like image compressor: custom .bg stream, grayscale/RGB/RGBA, fast encode/decode"
 license = "GPL-3.0-or-later"

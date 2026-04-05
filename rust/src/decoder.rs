@@ -1,145 +1,158 @@
-//! Decoder .bg → image (grayscale or RGB).
-//! Pipeline: header → RLE per block (sequential) → dequant + IDCT + write (parallel).
+//! Decoder .bg → image.
+//! Supports all versions:
+//!   v1: grayscale, RLE
+//!   v2: RGB planar, RLE
+//!   v3: RGBA planar, RLE
+//!   v4: YCbCr 4:2:0, Huffman  → RGB output
+//!   v5: YCbCr 4:2:0 + A, Huffman → RGBA output
 
 use crate::block::Block;
+use crate::colorspace;
 use crate::dct;
 use crate::encoder;
+use crate::huffman;
 use crate::zigzag::ZIGZAG;
+use rayon::prelude::*;
 
-const HEADER_SIZE: usize = 3 + 4 + 4 + 1;
+const HEADER_SIZE:     usize = 3 + 4 + 4 + 1;
 const HEADER_SIZE_OLD: usize = 3 + 4 + 4;
 const EOB_RUN: u8 = 0xFF;
 
-/// Decode a single block from buffer[pos..]. Returns Some((block, new_pos)) or None.
+// ---------------------------------------------------------------------------
+// RLE decode (v1/v2/v3)
+// ---------------------------------------------------------------------------
+
 fn decode_rle_one_block(buffer: &[u8], mut pos: usize) -> Option<(Block, usize)> {
     let mut block = Block::new();
-    if pos + 2 > buffer.len() {
-        return None;
-    }
+    if pos + 2 > buffer.len() { return None; }
     block.data[ZIGZAG[0]] = i16::from_le_bytes([buffer[pos], buffer[pos + 1]]);
     pos += 2;
 
-    let mut ac_index: usize = 1;
+    let mut ac_index = 1usize;
     loop {
-        if pos + 3 > buffer.len() {
-            return None;
-        }
-        let run = buffer[pos];
+        if pos + 3 > buffer.len() { return None; }
+        let run   = buffer[pos];
         let level = i16::from_le_bytes([buffer[pos + 1], buffer[pos + 2]]);
         pos += 3;
-
-        if run == EOB_RUN && level == 0 {
-            break;
-        }
-
+        if run == EOB_RUN && level == 0 { break; }
         for _ in 0..run {
-            if ac_index < 64 {
-                block.data[ZIGZAG[ac_index]] = 0;
-                ac_index += 1;
-            }
+            if ac_index < 64 { block.data[ZIGZAG[ac_index]] = 0; ac_index += 1; }
         }
-        if ac_index < 64 {
-            block.data[ZIGZAG[ac_index]] = level;
-            ac_index += 1;
-        }
+        if ac_index < 64 { block.data[ZIGZAG[ac_index]] = level; ac_index += 1; }
     }
     Some((block, pos))
 }
 
-/// Decode RLE only: buffer[pos..] → Vec<Block>. Returns Some((blocks, new_pos)) or None.
-fn decode_rle_to_blocks(buffer: &[u8], mut pos: usize, num_blocks: usize) -> Option<(Vec<Block>, usize)> {
-    let mut blocks = Vec::with_capacity(num_blocks);
-
-    for _ in 0..num_blocks {
+fn decode_rle_to_blocks(buffer: &[u8], mut pos: usize, n: usize) -> Option<(Vec<Block>, usize)> {
+    let mut blocks = Vec::with_capacity(n);
+    for _ in 0..n {
         let (block, new_pos) = decode_rle_one_block(buffer, pos)?;
         pos = new_pos;
         blocks.push(block);
     }
-
     Some((blocks, pos))
 }
 
-/// Decode block-by-block (streaming): no full temp, write directly to out.
-fn decode_blocks_streaming(
-    buffer: &[u8],
-    mut pos: usize,
-    w: usize,
-    h: usize,
-    quant_table: &[i16; 64],
-    out: &mut [u8],
-    stride: usize,
-    offset: usize,
+/// Decode one plane (RLE), dequant+IDCT in parallel, write to interleaved output.
+fn decode_plane_rle(
+    buffer: &[u8], pos: usize,
+    w: usize, h: usize,
+    quant: &[i16; 64],
+    out: &mut [u8], stride: usize, offset: usize,
 ) -> Option<usize> {
-    let blocks_wide = (w + 7) / 8;
-    let blocks_high = (h + 7) / 8;
-    let num_blocks = blocks_wide * blocks_high;
+    let bw = (w + 7) / 8;
+    let n  = bw * ((h + 7) / 8);
 
-    for block_index in 0..num_blocks {
-        let (mut block, new_pos) = decode_rle_one_block(buffer, pos)?;
-        pos = new_pos;
+    let (mut blocks, new_pos) = decode_rle_to_blocks(buffer, pos, n)?;
 
-        for i in 0..64 {
-            block.data[i] = block.data[i].saturating_mul(quant_table[i]);
-        }
-        dct::idct(&mut block);
+    blocks.par_iter_mut().for_each(|block| {
+        for i in 0..64 { block.data[i] = block.data[i].saturating_mul(quant[i]); }
+        dct::idct(block);
+    });
 
-        let by = (block_index / blocks_wide) * 8;
-        let bx = (block_index % blocks_wide) * 8;
+    for (idx, block) in blocks.iter().enumerate() {
+        let by = (idx / bw) * 8;
+        let bx = (idx % bw) * 8;
         for y in 0..8 {
             for x in 0..8 {
-                let py = by + y;
-                let px = bx + x;
+                let py = by + y; let px = bx + x;
                 if py < h && px < w {
-                    let idx = (py * w + px) * stride + offset;
-                    if idx < out.len() {
-                        out[idx] = (block.data[y * 8 + x] + 128).clamp(0, 255) as u8;
+                    let i = (py * w + px) * stride + offset;
+                    if i < out.len() {
+                        out[i] = (block.data[y * 8 + x] + 128).clamp(0, 255) as u8;
                     }
                 }
             }
         }
     }
-    Some(pos)
+    Some(new_pos)
 }
 
-/// Decode a single plane from buffer[pos..] and write to out. Streaming: block-by-block, no full temp.
-fn decode_one_plane_strided(
-    buffer: &[u8],
-    pos: usize,
-    w: usize,
-    h: usize,
-    quant_table: &[i16; 64],
-    out: &mut [u8],
-    stride: usize,
-    offset: usize,
+// ---------------------------------------------------------------------------
+// Huffman decode (v4/v5)
+// ---------------------------------------------------------------------------
+
+/// Decode one plane using Huffman, dequant+IDCT in parallel, write to flat plane buffer.
+fn decode_plane_huffman(
+    buffer: &[u8], pos: usize,
+    w: usize, h: usize,
+    quant: &[i16; 64],
+    is_chroma: bool,
+    plane: &mut [u8],
 ) -> Option<usize> {
-    decode_blocks_streaming(buffer, pos, w, h, quant_table, out, stride, offset)
+    let bw = (w + 7) / 8;
+    let bh = (h + 7) / 8;
+    let n  = bw * bh;
+
+    let (mut blocks, new_pos) = huffman::decode_plane(buffer, pos, n, is_chroma)?;
+
+    // Parallel dequant + IDCT
+    blocks.par_iter_mut().for_each(|block| {
+        for i in 0..64 { block.data[i] = block.data[i].saturating_mul(quant[i]); }
+        dct::idct(block);
+    });
+
+    // Write to flat plane
+    for (idx, block) in blocks.iter().enumerate() {
+        let by = (idx / bw) * 8;
+        let bx = (idx % bw) * 8;
+        for y in 0..8 {
+            for x in 0..8 {
+                let py = by + y; let px = bx + x;
+                if py < h && px < w {
+                    let i = py * w + px;
+                    if i < plane.len() {
+                        plane[i] = (block.data[y * 8 + x] + 128).clamp(0, 255) as u8;
+                    }
+                }
+            }
+        }
+    }
+    Some(new_pos)
 }
 
-/// Parse optional ICC trailer at buffer[pos..]. Returns (icc_data, new_pos) or None.
+// ---------------------------------------------------------------------------
+// ICC trailer
+// ---------------------------------------------------------------------------
+
 fn parse_icc_trailer(buffer: &[u8], pos: usize) -> Option<(Vec<u8>, usize)> {
-    if pos + 3 + 1 + 4 > buffer.len() {
-        return None;
-    }
-    if buffer[pos] != b'B' || buffer[pos + 1] != b'G' || buffer[pos + 2] != b'x' {
-        return None;
-    }
+    if pos + 8 > buffer.len() { return None; }
+    if buffer[pos] != b'B' || buffer[pos+1] != b'G' || buffer[pos+2] != b'x' { return None; }
     let chunk_type = buffer[pos + 3];
-    let len = u32::from_le_bytes(buffer[pos + 4..pos + 8].try_into().unwrap()) as usize;
-    let pos = pos + 8;
-    if chunk_type != 1 || pos + len > buffer.len() {
-        return None;
-    }
-    Some((buffer[pos..pos + len].to_vec(), pos + len))
+    let len = u32::from_le_bytes(buffer[pos+4..pos+8].try_into().unwrap()) as usize;
+    let data_pos = pos + 8;
+    if chunk_type != 1 || data_pos + len > buffer.len() { return None; }
+    Some((buffer[data_pos..data_pos+len].to_vec(), data_pos + len))
 }
 
-/// Decode a .bg stream into pixels (grayscale or RGB per header).
-/// out_channels: 1 = grayscale (out_pixels = w*h), 3 = RGB (out_pixels = w*h*3).
-/// Requires out_pixels.len() >= width*height*out_channels.
-/// out_icc: if Some, receives embedded ICC profile (caller must free).
+// ---------------------------------------------------------------------------
+// Public decode entry point
+// ---------------------------------------------------------------------------
+
 pub fn decode(
     buffer: &[u8],
     out_pixels: &mut [u8],
-    out_width: &mut u32,
+    out_width:  &mut u32,
     out_height: &mut u32,
     out_channels: &mut u32,
     out_icc: Option<&mut Vec<u8>>,
@@ -150,77 +163,139 @@ pub fn decode(
     if buffer[0] != b'B' || buffer[1] != b'G' {
         return false;
     }
+
     let version = buffer[2];
-    if version != 1 && version != 2 && version != 3 {
+    if version == 0 || version > 5 {
         return false;
     }
 
-    let width = u32::from_le_bytes(buffer[3..7].try_into().unwrap());
+    let width  = u32::from_le_bytes(buffer[3..7].try_into().unwrap());
     let height = u32::from_le_bytes(buffer[7..11].try_into().unwrap());
     let (header_size, quality) = if buffer.len() >= HEADER_SIZE {
         (HEADER_SIZE, buffer[11])
     } else {
         (HEADER_SIZE_OLD, 50u8)
     };
-    let quant_table = encoder::quant_table_for_quality(if quality == 0 { 50 } else { quality });
+    let q = if quality == 0 { 50 } else { quality };
 
-    if width == 0 || height == 0 || width > 65536 || height > 65536 {
-        return false;
-    }
-
+    if width == 0 || height == 0 || width > 65536 || height > 65536 { return false; }
     let w = width as usize;
     let h = height as usize;
 
+    // ---- v1: grayscale RLE ----
     if version == 1 {
-        let required = w * h;
-        if out_pixels.len() < required {
-            return false;
-        }
-        *out_width = width;
-        *out_height = height;
-        *out_channels = 1;
-        let pos = match decode_one_plane_strided(buffer, header_size, w, h, &quant_table, out_pixels, 1, 0) {
-            Some(p) => p,
-            None => return false,
+        if out_pixels.len() < w * h { return false; }
+        *out_width = width; *out_height = height; *out_channels = 1;
+        let quant = encoder::quant_table_for_quality(q);
+        let pos = match decode_plane_rle(buffer, header_size, w, h, &quant, out_pixels, 1, 0) {
+            Some(p) => p, None => return false,
         };
         if let Some(v) = out_icc {
-            if let Some((icc, _)) = parse_icc_trailer(buffer, pos) {
-                *v = icc;
-            }
+            if let Some((icc, _)) = parse_icc_trailer(buffer, pos) { *v = icc; }
         }
-        true
-    } else {
-        let ch = if version == 3 { 4 } else { 3 };
-        let required = w * h * ch;
-        if out_pixels.len() < required {
-            return false;
-        }
-        *out_width = width;
-        *out_height = height;
-        *out_channels = ch as u32;
+        return true;
+    }
 
+    // ---- v2: RGB planar RLE ----
+    if version == 2 {
+        if out_pixels.len() < w * h * 3 { return false; }
+        *out_width = width; *out_height = height; *out_channels = 3;
+        let quant = encoder::quant_table_for_quality(q);
         let mut pos = header_size;
-        for c in 0..ch {
-            pos = match decode_one_plane_strided(buffer, pos, w, h, &quant_table, out_pixels, ch, c) {
-                Some(p) => p,
-                None => return false,
+        for c in 0..3 {
+            pos = match decode_plane_rle(buffer, pos, w, h, &quant, out_pixels, 3, c) {
+                Some(p) => p, None => return false,
             };
         }
         if let Some(v) = out_icc {
-            if let Some((icc, _)) = parse_icc_trailer(buffer, pos) {
-                *v = icc;
-            }
+            if let Some((icc, _)) = parse_icc_trailer(buffer, pos) { *v = icc; }
         }
-        true
+        return true;
     }
+
+    // ---- v3: RGBA planar RLE ----
+    if version == 3 {
+        if out_pixels.len() < w * h * 4 { return false; }
+        *out_width = width; *out_height = height; *out_channels = 4;
+        let quant = encoder::quant_table_for_quality(q);
+        let mut pos = header_size;
+        for c in 0..4 {
+            pos = match decode_plane_rle(buffer, pos, w, h, &quant, out_pixels, 4, c) {
+                Some(p) => p, None => return false,
+            };
+        }
+        if let Some(v) = out_icc {
+            if let Some((icc, _)) = parse_icc_trailer(buffer, pos) { *v = icc; }
+        }
+        return true;
+    }
+
+    // ---- v4: YCbCr 4:2:0 + Huffman → RGB ----
+    if version == 4 {
+        if out_pixels.len() < w * h * 3 {
+            return false;
+        }
+        *out_width = width; *out_height = height; *out_channels = 3;
+
+        let cw = (w + 1) / 2;
+        let ch = (h + 1) / 2;
+        let luma_q   = encoder::quant_table_for_quality(q);
+        let chroma_q = encoder::chroma_quant_table_for_quality(q);
+
+        let mut y_plane  = vec![0u8; w * h];
+        let mut cb_plane = vec![0u8; cw * ch];
+        let mut cr_plane = vec![0u8; cw * ch];
+
+        let mut pos = header_size;
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, &mut y_plane)  { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  &mut cb_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  &mut cr_plane) { Some(p) => p, None => return false };
+
+        colorspace::ycbcr420_to_rgb(&y_plane, &cb_plane, &cr_plane, w, h, out_pixels);
+
+        if let Some(v) = out_icc {
+            if let Some((icc, _)) = parse_icc_trailer(buffer, pos) { *v = icc; }
+        }
+        return true;
+    }
+
+    // ---- v5: YCbCr 4:2:0 + A + Huffman → RGBA ----
+    if version == 5 {
+        if out_pixels.len() < w * h * 4 {
+            return false;
+        }
+        *out_width = width; *out_height = height; *out_channels = 4;
+
+        let cw = (w + 1) / 2;
+        let ch = (h + 1) / 2;
+        let luma_q   = encoder::quant_table_for_quality(q);
+        let chroma_q = encoder::chroma_quant_table_for_quality(q);
+
+        let mut y_plane  = vec![0u8; w * h];
+        let mut cb_plane = vec![0u8; cw * ch];
+        let mut cr_plane = vec![0u8; cw * ch];
+        let mut a_plane  = vec![0u8; w * h];
+
+        let mut pos = header_size;
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, &mut y_plane)  { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  &mut cb_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  &mut cr_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, &mut a_plane)  { Some(p) => p, None => return false };
+
+        colorspace::ycbcr420a_to_rgba(&y_plane, &cb_plane, &cr_plane, &a_plane, w, h, out_pixels);
+
+        if let Some(v) = out_icc {
+            if let Some((icc, _)) = parse_icc_trailer(buffer, pos) { *v = icc; }
+        }
+        return true;
+    }
+
+    false
 }
 
-/// Decode a .bg to grayscale (version 1 only).
 pub fn decode_grayscale(
-    buffer: &[u8],
-    out_pixels: &mut [u8],
-    out_width: &mut u32,
-    out_height: &mut u32,
+    buffer: &[u8], out_pixels: &mut [u8],
+    out_width: &mut u32, out_height: &mut u32,
 ) -> bool {
     let mut ch = 0u32;
     let ok = decode(buffer, out_pixels, out_width, out_height, &mut ch, None);

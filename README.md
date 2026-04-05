@@ -1,6 +1,6 @@
 # Bitgrain
 
-Image compressor (JPEG-like). Encodes to a custom `.bg` stream; decodes to pixels or standard image files. Grayscale, RGB, RGBA. CLI and C API.
+Image compressor (JPEG-like). Encodes to a custom `.bg` stream; decodes to pixels or standard image files. Grayscale, RGB, RGBA. CLI + C API (FFI-backed) with deterministic mode support.
 
 ## Build
 
@@ -30,27 +30,53 @@ Portable build: `make CFLAGS_NATIVE= RUSTFLAGS_NATIVE= bitgrain`.
 
 ## CLI
 
+Preferred command style uses subcommands:
+
+```bash
+bitgrain encode <input> [-o output.bg] [--quality 1-100]
+bitgrain decode <input.bg> [-o output.{png,jpg,webp,bmp,tga,pgm}]
+bitgrain roundtrip <input> [-o output.jpg] [--quality 1-100] [--metrics]
+```
+
+Legacy flags are still supported (`-i/-d/-cd/...`) for backward compatibility.
+
 | Option | Description |
 |--------|-------------|
-| `-i <path>` | Input file or directory |
-| `-o <path>` | Output file or directory |
-| `-d` | Decode: .bg → image |
-| `-cd` | Round-trip: encode + decode in memory, write image |
-| `-q <1-100>` | Encode quality (default 85) |
-| `-Q <1-100>` | Output JPG/WebP quality (default 85) |
-| `-m` | Round-trip: print PSNR and SSIM |
-| `-y` | Overwrite |
-| `-v`, `-h` | Version, help |
+| `-o, --output <path>` | Output file or directory |
+| `-q, --quality <1-100>` | Encode quality (default 85) |
+| `-Q, --output-quality <1-100>` | Output JPG/WebP quality (default 85) |
+| `-t, --threads <n>` | Worker threads for codec internals |
+| `--deterministic` | Alias for `--threads 1` |
+| `-m, --metrics` | Round-trip: print PSNR and SSIM |
+| `-y, --overwrite` | Overwrite outputs |
+| `-v, --version` / `-h, --help` | Version / help |
 
-Input formats: JPEG, PNG, BMP, GIF, TGA, PGM, PSD, HDR, WebP (stb_image + libwebp). Output: extension of `-o` (.jpg, .png, .pgm, .webp). **Transparencia/canales alfa:** RGBA soportado (PNG/WebP con alpha → .bg versión 3; decode → 4 canales).
+Input formats: JPEG, PNG, BMP, GIF, TGA, PGM, PSD, HDR, WebP (stb_image + libwebp).
+
+Decode/roundtrip output formats by `-o` extension: `.jpg/.jpeg`, `.png`, `.bmp`, `.tga`, `.pgm` (grayscale), `.webp`.
 
 ## Format .bg
 
-Header 12 bytes: magic "BG", version (1=gray, 2=RGB, 3=RGBA), width (4 LE), height (4 LE), quality (1). Payload: blocks in scan order; per block DC (2 bytes), AC zigzag (run 1 byte, level 2 bytes), EOB run=0xFF level=0.
+Header (12 bytes): magic `"BG"`, version, width (u32 LE), height (u32 LE), quality.
+
+Versions:
+
+- `v1`: grayscale + RLE entropy
+- `v2`: RGB planar + RLE entropy (legacy)
+- `v3`: RGBA planar + RLE entropy (legacy)
+- `v4`: YCbCr 4:2:0 + Huffman (RGB output)
+- `v5`: YCbCr 4:2:0 + alpha + Huffman (RGBA output)
 
 ## C API
 
-`includes/encoder.h`. Encode: `bitgrain_encode_grayscale`, `bitgrain_encode_rgb`, `bitgrain_encode_rgba`. Decode: `bitgrain_decode(buf, size, pixels, cap, &w, &h, &channels)`. Channels 1, 3, or 4. Link `libbitgrain.a` and C objects; add `-lpthread -ldl -lm -lwebp`. Load/save helpers in `c/image_loader.h`, `c/image_writer.h`.
+`includes/encoder.h`.
+
+- Encode: `bitgrain_encode_grayscale`, `bitgrain_encode_rgb`, `bitgrain_encode_rgba`
+- Decode: `bitgrain_decode(buf, size, pixels, cap, &w, &h, &channels)`
+- Threading: `bitgrain_set_threads`
+- Error state: `bitgrain_last_error_code`, `bitgrain_last_error_message`, `bitgrain_clear_error`
+
+Channels are `1`, `3`, or `4`. Link `libbitgrain.a` and C objects; add `-lpthread -ldl -lm -lwebp`.
 
 ## Prioridades
 

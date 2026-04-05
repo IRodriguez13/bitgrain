@@ -12,9 +12,21 @@ pub fn write_byte(buffer: &mut [u8], position: &mut i32, value: u8) {
 #[inline]
 pub fn write_bytes(buffer: &mut [u8], position: &mut i32, data: &[u8]) {
     let pos = *position as usize;
-    let n = data.len().min(buffer.len().saturating_sub(pos));
-    if n > 0 {
-        buffer[pos..pos + n].copy_from_slice(&data[..n]);
+    let end = pos.saturating_add(data.len());
+    if end > buffer.len() 
+    {
+        panic!(
+            "bitgrain: encode buffer exhausted (need {} bytes at pos {}, cap {})",
+            data.len(),
+            pos,
+            buffer.len()
+        );
     }
+    
+    if !data.is_empty() 
+    {
+        buffer[pos..end].copy_from_slice(data);
+    }
+    
     *position += data.len() as i32;
 }

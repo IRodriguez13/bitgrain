@@ -31,6 +31,28 @@ int bitgrain_write_png(const char *path,
                        int comp);
 
 /**
+ * Write an image as BMP (lossless).
+ * comp: 1 = grayscale, 3 = RGB, 4 = RGBA.
+ * Returns 0 on success, non-zero on error.
+ */
+int bitgrain_write_bmp(const char *path,
+                       const uint8_t *pixels,
+                       uint32_t width,
+                       uint32_t height,
+                       int comp);
+
+/**
+ * Write an image as TGA.
+ * comp: 1 = grayscale, 3 = RGB, 4 = RGBA.
+ * Returns 0 on success, non-zero on error.
+ */
+int bitgrain_write_tga(const char *path,
+                       const uint8_t *pixels,
+                       uint32_t width,
+                       uint32_t height,
+                       int comp);
+
+/**
  * Write an image as WebP. comp: 3 = RGB, 4 = RGBA. quality 1–100.
  * Returns 0 on success, non-zero on error.
  */
