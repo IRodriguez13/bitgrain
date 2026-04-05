@@ -205,13 +205,13 @@ pub(crate) fn clamp_block_jpeg_coeffs(block: &mut Block) {
 
 pub struct BitWriter {
     pub buf:     Vec<u8>,
-    cur_byte:    u8,
-    bits_filled: u8,
+    bit_buf:     u64,
+    bits_in:     u8,
 }
 
 impl BitWriter {
     pub fn new() -> Self {
-        Self { buf: Vec::with_capacity(4096), cur_byte: 0, bits_filled: 0 }
+        Self { buf: Vec::with_capacity(4096), bit_buf: 0, bits_in: 0 }
     }
 
     #[inline]
@@ -225,26 +225,28 @@ impl BitWriter {
     #[inline]
     pub fn write_bits(&mut self, code: u16, n: u8) {
         if n == 0 { return; }
-        for i in (0..n).rev() {
-            let bit = ((code >> i) & 1) as u8;
-            self.cur_byte = (self.cur_byte << 1) | bit;
-            self.bits_filled += 1;
-            if self.bits_filled == 8 {
-                self.push_entropy_byte(self.cur_byte);
-                self.cur_byte = 0;
-                self.bits_filled = 0;
+        let mask = (1u64 << n) - 1;
+        self.bit_buf = (self.bit_buf << n) | ((code as u64) & mask);
+        self.bits_in += n;
+
+        while self.bits_in >= 8 {
+            let shift = self.bits_in - 8;
+            let byte = (self.bit_buf >> shift) as u8;
+            self.push_entropy_byte(byte);
+            self.bits_in -= 8;
+            if self.bits_in == 0 {
+                self.bit_buf = 0;
+            } else {
+                self.bit_buf &= (1u64 << self.bits_in) - 1;
             }
         }
     }
 
     /// Flush remaining bits, padding with 1s (JPEG convention). Call once per plane.
     pub fn flush(&mut self) {
-        if self.bits_filled > 0 {
-            let pad = 8 - self.bits_filled;
-            self.cur_byte = (self.cur_byte << pad) | ((1u8 << pad) - 1);
-            self.push_entropy_byte(self.cur_byte);
-            self.cur_byte = 0;
-            self.bits_filled = 0;
+        if self.bits_in > 0 {
+            let pad = 8 - self.bits_in;
+            self.write_bits((1u16 << pad) - 1, pad);
         }
     }
 }
@@ -256,66 +258,77 @@ impl BitWriter {
 pub struct BitReader<'a> {
     buf:     &'a [u8],
     pos:     usize,
-    cur_byte: u8,
-    bits_left: u8,
-}
-
-trait BitRead {
-    fn read_bits(&mut self, n: u8) -> Option<u16>;
+    bit_buf: u64,
+    bits_in: u8,
 }
 
 impl<'a> BitReader<'a> {
     pub fn new(buf: &'a [u8], start: usize) -> Self {
-        Self { buf, pos: start, cur_byte: 0, bits_left: 0 }
+        Self { buf, pos: start, bit_buf: 0, bits_in: 0 }
     }
 
     #[inline]
-    fn read_one_bit(&mut self) -> Option<u8> {
-        if self.bits_left == 0 {
-            if self.pos >= self.buf.len() {
-                return None;
-            }
-            self.cur_byte = self.buf[self.pos];
+    fn refill(&mut self) {
+        while self.bits_in <= 56 && self.pos < self.buf.len() {
+            let byte = self.buf[self.pos];
             self.pos += 1;
             // JPEG byte-unstuffing
-            if self.cur_byte == 0xFF && self.pos < self.buf.len() && self.buf[self.pos] == 0x00 {
+            if byte == 0xFF && self.pos < self.buf.len() && self.buf[self.pos] == 0x00 {
                 self.pos += 1;
             }
-            self.bits_left = 8;
+            self.bit_buf = (self.bit_buf << 8) | byte as u64;
+            self.bits_in += 8;
         }
-        self.bits_left -= 1;
-        Some((self.cur_byte >> self.bits_left) & 1)
     }
 
     #[inline]
     pub fn read_bits(&mut self, n: u8) -> Option<u16> {
         if n == 0 { return Some(0); }
-        let mut out = 0u16;
-        for _ in 0..n {
-            let bit = self.read_one_bit()? as u16;
-            out = (out << 1) | bit;
+        if n == 1 {
+            return self.read_one_bit().map(|b| b as u16);
+        }
+        self.refill();
+        if self.bits_in < n {
+            return None;
+        }
+        let shift = self.bits_in - n;
+        let out = ((self.bit_buf >> shift) & ((1u64 << n) - 1)) as u16;
+        self.bits_in -= n;
+        if self.bits_in == 0 {
+            self.bit_buf = 0;
+        } else {
+            self.bit_buf &= (1u64 << self.bits_in) - 1;
         }
         Some(out)
     }
 
-    pub fn byte_position(&self) -> usize { self.pos }
-}
-
-impl<'a> BitRead for BitReader<'a> {
     #[inline]
-    fn read_bits(&mut self, n: u8) -> Option<u16> {
-        BitReader::read_bits(self, n)
+    pub fn read_one_bit(&mut self) -> Option<u8> {
+        if self.bits_in == 0 {
+            self.refill();
+            if self.bits_in == 0 {
+                return None;
+            }
+        }
+        self.bits_in -= 1;
+        let bit = ((self.bit_buf >> self.bits_in) & 1) as u8;
+        if self.bits_in == 0 {
+            self.bit_buf = 0;
+        }
+        Some(bit)
     }
+
+    pub fn byte_position(&self) -> usize { self.pos }
 }
 
 // ---------------------------------------------------------------------------
 // Huffman symbol decode via prebuilt binary tree
 // ---------------------------------------------------------------------------
 
-fn decode_sym<R: BitRead>(reader: &mut R, tree: &DecodeTree) -> Option<u8> {
+fn decode_sym(reader: &mut BitReader, tree: &DecodeTree) -> Option<u8> {
     let mut idx = 0usize;
     for _ in 0..16 {
-        let bit = reader.read_bits(1)? as usize;
+        let bit = reader.read_one_bit()? as usize;
         let next = tree.nodes[idx].child[bit];
         if next < 0 {
             return None;
@@ -405,8 +418,8 @@ pub fn decode_plane(buf: &[u8], start: usize, n_blocks: usize, is_chroma: bool) 
     Some((blocks, data_end))
 }
 
-fn decode_plane_blocks<R: BitRead>(
-    reader: &mut R,
+fn decode_plane_blocks(
+    reader: &mut BitReader,
     n_blocks: usize,
     dc_tree: &DecodeTree,
     ac_tree: &DecodeTree,

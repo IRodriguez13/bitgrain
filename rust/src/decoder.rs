@@ -78,9 +78,7 @@ fn decode_plane_rle(
                 let py = by + y; let px = bx + x;
                 if py < h && px < w {
                     let i = (py * w + px) * stride + offset;
-                    if i < out.len() {
-                        out[i] = (block.data[y * 8 + x] + 128).clamp(0, 255) as u8;
-                    }
+                    out[i] = (block.data[y * 8 + x] + 128).clamp(0, 255) as u8;
                 }
             }
         }

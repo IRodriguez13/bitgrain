@@ -38,8 +38,7 @@ static void dct_1d_sse2(const float *in, float *out)
         __m128 sum = _mm_setzero_ps();
         for (int x = 0; x < 8; x += 4) {
             __m128 a = _mm_loadu_ps(&in[x]);
-            __m128 b = _mm_setr_ps(COS_TABLE[u][x],   COS_TABLE[u][x+1],
-                                   COS_TABLE[u][x+2], COS_TABLE[u][x+3]);
+            __m128 b = _mm_loadu_ps(&COS_TABLE[u][x]);
             sum = _mm_add_ps(sum, _mm_mul_ps(a, b));
         }
         float s[4];
@@ -176,12 +175,13 @@ static void dct_1d(const float *in, float *out)
 
 static void idct_1d(const float *in, float *out)
 {
+    float sc[8];
+    sc[0] = INV_SQRT2 * in[0];
+    for (int u = 1; u < 8; u++) sc[u] = in[u];
     for (int x = 0; x < 8; x++) {
         float sum = 0.f;
-        for (int u = 0; u < 8; u++) {
-            float scale = (u == 0) ? INV_SQRT2 : 1.f;
-            sum += scale * in[u] * COS_TABLE[u][x];
-        }
+        for (int u = 0; u < 8; u++)
+            sum += sc[u] * COS_TABLE[u][x];
         out[x] = 0.5f * sum;
     }
 }
