@@ -75,6 +75,96 @@ fn jpeg_ac_table() -> &'static AcTable {
     JPEG_AC_TABLE.get_or_init(|| ac_table_from_stb_ht(&JPEG_LUMA_AC_HT))
 }
 
+#[derive(Clone, Copy)]
+struct DecodeNode {
+    child: [i16; 2],
+    sym: i16,
+}
+
+impl DecodeNode {
+    #[inline]
+    fn new() -> Self {
+        Self { child: [-1, -1], sym: -1 }
+    }
+}
+
+struct DecodeTree {
+    nodes: Vec<DecodeNode>,
+}
+
+impl DecodeTree {
+    fn with_root() -> Self {
+        Self { nodes: vec![DecodeNode::new()] }
+    }
+
+    fn insert(&mut self, code: u16, len: u8, sym: u8) -> bool {
+        if len == 0 || len > 16 {
+            return false;
+        }
+        let mut idx = 0usize;
+        for shift in (0..len).rev() {
+            // A leaf cannot be extended.
+            if self.nodes[idx].sym >= 0 {
+                return false;
+            }
+            let bit = ((code >> shift) & 1) as usize;
+            let next = self.nodes[idx].child[bit];
+            let next_idx = if next >= 0 {
+                next as usize
+            } else {
+                self.nodes.push(DecodeNode::new());
+                let ni = (self.nodes.len() - 1) as i16;
+                self.nodes[idx].child[bit] = ni;
+                ni as usize
+            };
+            idx = next_idx;
+        }
+        // A node with children cannot become a leaf; an existing leaf cannot be overwritten.
+        if self.nodes[idx].sym >= 0 || self.nodes[idx].child[0] >= 0 || self.nodes[idx].child[1] >= 0 {
+            return false;
+        }
+        self.nodes[idx].sym = sym as i16;
+        true
+    }
+}
+
+static LUMA_DC_TREE: OnceLock<DecodeTree> = OnceLock::new();
+static CHROMA_DC_TREE: OnceLock<DecodeTree> = OnceLock::new();
+static AC_TREE: OnceLock<DecodeTree> = OnceLock::new();
+
+fn build_dc_tree(table: &[(u8, u16)]) -> DecodeTree {
+    let mut t = DecodeTree::with_root();
+    for (sym, &(len, code)) in table.iter().enumerate() {
+        assert!(t.insert(code, len, sym as u8), "invalid DC Huffman table");
+    }
+    t
+}
+
+fn build_ac_tree(table: &AcTable) -> DecodeTree {
+    let mut t = DecodeTree::with_root();
+    for (sym, &(len, code)) in table.iter().enumerate() {
+        if len > 0 {
+            assert!(t.insert(code, len, sym as u8), "invalid AC Huffman table");
+        }
+    }
+    t
+}
+
+#[inline]
+fn luma_dc_tree() -> &'static DecodeTree {
+    LUMA_DC_TREE.get_or_init(|| build_dc_tree(LUMA_DC_TABLE))
+}
+
+#[inline]
+fn chroma_dc_tree() -> &'static DecodeTree {
+    CHROMA_DC_TREE.get_or_init(|| build_dc_tree(CHROMA_DC_TABLE))
+}
+
+#[inline]
+fn ac_tree() -> &'static DecodeTree {
+    AC_TREE.get_or_init(|| build_ac_tree(jpeg_ac_table()))
+}
+
 // ---------------------------------------------------------------------------
 // Magnitude helpers
 // ---------------------------------------------------------------------------
@@ -219,33 +309,24 @@ impl<'a> BitRead for BitReader<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// Huffman symbol decode via canonical tree (linear scan — tables are small)
+// Huffman symbol decode via prebuilt binary tree
 // ---------------------------------------------------------------------------
 
-fn decode_dc_sym<R: BitRead>(reader: &mut R, table: &[(u8, u16)]) -> Option<u8> {
-    let mut code = 0u16;
-    let mut len  = 0u8;
-    loop {
-        code = (code << 1) | reader.read_bits(1)?;
-        len += 1;
-        if len > 16 { return None; }
-        for (sym, &(tlen, tcode)) in table.iter().enumerate() {
-            if tlen == len && tcode == code { return Some(sym as u8); }
+fn decode_sym<R: BitRead>(reader: &mut R, tree: &DecodeTree) -> Option<u8> {
+    let mut idx = 0usize;
+    for _ in 0..16 {
+        let bit = reader.read_bits(1)? as usize;
+        let next = tree.nodes[idx].child[bit];
+        if next < 0 {
+            return None;
+        }
+        idx = next as usize;
+        let sym = tree.nodes[idx].sym;
+        if sym >= 0 {
+            return Some(sym as u8);
         }
     }
-}
-
-fn decode_ac_sym<R: BitRead>(reader: &mut R, table: &AcTable) -> Option<u8> {
-    let mut code = 0u16;
-    let mut len  = 0u8;
-    loop {
-        code = (code << 1) | reader.read_bits(1)?;
-        len += 1;
-        if len > 16 { return None; }
-        for (sym, &(tlen, tcode)) in table.iter().enumerate() {
-            if tlen > 0 && tlen == len && tcode == code { return Some(sym as u8); }
-        }
-    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -313,12 +394,12 @@ pub fn decode_plane(buf: &[u8], start: usize, n_blocks: usize, is_chroma: bool) 
         return None;
     }
 
-    let dc_table = if is_chroma { CHROMA_DC_TABLE } else { LUMA_DC_TABLE };
-    let ac_table = jpeg_ac_table();
+    let dc_tree = if is_chroma { chroma_dc_tree() } else { luma_dc_tree() };
+    let ac_tree = ac_tree();
     let data = &buf[data_start..data_end];
 
     let mut reader = BitReader::new(data, 0);
-    let blocks = decode_plane_blocks(&mut reader, n_blocks, dc_table, ac_table)?;
+    let blocks = decode_plane_blocks(&mut reader, n_blocks, dc_tree, ac_tree)?;
 
     // Return data_end as the next byte position (exact plane boundary)
     Some((blocks, data_end))
@@ -327,15 +408,15 @@ pub fn decode_plane(buf: &[u8], start: usize, n_blocks: usize, is_chroma: bool) 
 fn decode_plane_blocks<R: BitRead>(
     reader: &mut R,
     n_blocks: usize,
-    dc_table: &[(u8, u16)],
-    ac_table: &AcTable,
+    dc_tree: &DecodeTree,
+    ac_tree: &DecodeTree,
 ) -> Option<Vec<Block>> {
     let mut blocks = Vec::with_capacity(n_blocks);
     for _bi in 0..n_blocks {
         let mut block = Block::new();
 
         // DC
-        let dc_cat = match decode_dc_sym(reader, dc_table) {
+        let dc_cat = match decode_sym(reader, dc_tree) {
             Some(c) => c,
             None => return None,
         };
@@ -353,7 +434,7 @@ fn decode_plane_blocks<R: BitRead>(
         // AC
         let mut ac_idx = 1usize;
         loop {
-            let sym = match decode_ac_sym(reader, ac_table) {
+            let sym = match decode_sym(reader, ac_tree) {
                 Some(s) => s,
                 None => return None,
             };
