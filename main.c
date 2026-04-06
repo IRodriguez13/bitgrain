@@ -68,6 +68,7 @@ int main(int argc, char **argv)
     if (argc >= 2 && (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0)) {
         printf("bitgrain %s\n", BITGRAIN_VERSION);
         printf("Author: Iván E. Rodriguez\n");
+        printf("Email: ivanrwcm25@gmail.com\n");
         printf("License: GPLv3\n");
         printf("Upstream: https://github.com/IRodriguez13/bitgrain\n");
         return 0;

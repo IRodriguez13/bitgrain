@@ -206,6 +206,7 @@ int cli_parse_subcommand(int argc, char **argv, cli_ctx_t *ctx, const char *subc
         }
         if (strcmp(a, "--version") == 0 || strcmp(a, "-v") == 0) {
             printf("bitgrain %s\n", BITGRAIN_VERSION);
+            printf("Email: ivanrwcm25@gmail.com\n");
             path_list_free(&input_specs);
             return -2;
         }
@@ -356,6 +357,7 @@ int cli_parse(int argc, char **argv, cli_ctx_t *ctx)
         case 'v':
             printf("bitgrain %s\n", BITGRAIN_VERSION);
             printf("Author: Iván E. Rodriguez\n");
+            printf("Email: ivanrwcm25@gmail.com\n");
             printf("License: GPLv3\n");
             printf("Upstream: https://github.com/IRodriguez13/bitgrain\n");
             return -2;
