@@ -4,7 +4,7 @@ This document specifies the .bg binary format for interoperability. Third-party 
 
 ## Overview
 
-Bitgrain is a block-based image codec using 8×8 DCT, quantization, and RLE entropy coding. It supports grayscale (1 channel), RGB (3 channels), and RGBA (4 channels).
+Bitgrain is a block-based image codec using 8×8 DCT, quantization, and entropy coding. It supports grayscale (1 channel), RGB (3 channels), and RGBA (4 channels).
 
 ## File Structure
 
@@ -19,22 +19,39 @@ Bitgrain is a block-based image codec using 8×8 DCT, quantization, and RLE entr
 | Offset | Size | Field    | Description |
 |--------|------|----------|-------------|
 | 0      | 2    | magic    | `0x42 0x47` ("BG") |
-| 2      | 1    | version  | 1=grayscale, 2=RGB, 3=RGBA |
+| 2      | 1    | version  | See version table below |
 | 3      | 4    | width    | Image width (uint32 LE) |
 | 7      | 4    | height   | Image height (uint32 LE) |
 | 11     | 1    | quality  | Quantization quality 1–100; 0 means default 50 |
 
-**Constraints:** width and height must be in [1, 65536]. Version must be 1, 2, or 3.
+**Constraints:** width and height must be in [1, 65536]. Current decoders accept versions 1..17.
+
+Version groups:
+
+- `v1`: grayscale + RLE
+- `v2`: RGB planar + RLE (legacy)
+- `v3`: RGBA planar + RLE (legacy)
+- `v4-v5`: YCbCr420(+A) + Huffman
+- `v6-v7`: YCbCr420(+A) + Huffman + chroma AC table
+- `v8-v9`: perceptual quantization profile
+- `v10-v11`: perceptual + chroma AC + DC delta
+- `v12-v13`: stronger perceptual profile
+- `v14-v15`: aggressive perceptual profile
+- `v16-v17`: very aggressive perceptual profile
 
 ## Block Layout
 
 The image is divided into 8×8 blocks in scan order (left-to-right, top-to-bottom). Blocks in the last row/column may be partially filled; edge pixels are replicated.
 
-- **Grayscale (version 1):** One plane of blocks (Y).
-- **RGB (version 2):** Three planes: Y (luma), Cb, Cr. Each plane has `ceil(width/8) * ceil(height/8)` blocks.
-- **RGBA (version 3):** Four planes: R, G, B, A. Same block count per plane.
+- **v1 (grayscale RLE):** One full-resolution plane.
+- **v2/v3 (legacy RLE):** 3 or 4 full-resolution planes.
+- **v4+ (YCbCr):**
+  - RGB profiles: Y full-resolution + Cb/Cr at 4:2:0 (`ceil(w/2) x ceil(h/2)`).
+  - RGBA profiles: same Y/Cb/Cr plus full-resolution alpha plane.
 
-## Block Encoding (RLE)
+## Block Encoding
+
+### RLE path (v1/v2/v3)
 
 Each block is encoded as:
 
@@ -53,9 +70,22 @@ Coefficients are in **zigzag order** (JPEG order):
 ...
 ```
 
+### Huffman path (v4+)
+
+For each plane:
+
+1. 4-byte little-endian plane payload length.
+2. Bitstream payload (MSB-first).
+3. Byte-stuffing `0xFF -> 0xFF 0x00` inside entropy payload.
+4. Final plane flush pads with 1s (JPEG convention).
+
+The decoder uses the per-plane length to jump exactly to the next plane boundary.
+
 ## Quantization
 
-Quality maps to a scaled JPEG luminance table. Formula for table entry `i`:
+Quality maps to scaled JPEG-like quantization tables (luma and chroma). Newer versions apply increasingly perceptual weighting profiles to close file-size gap versus JPEG.
+
+Base scaling formula:
 
 ```
 scaled[i] = clamp((base[i] * quality / 100 + 50) / 100, 1, 255)
@@ -95,8 +125,7 @@ Decoders that don't support ICC skip the trailer. Encoders write it only when an
 
 ## Extensions (Future)
 
-- **Version 4+:** Extended header with optional chunks.
-- **Progressive decoding:** Reordered bitstream for coarse-to-fine decode (roadmap).
+- Progressive decode / multi-pass refinement (roadmap).
 
 ## Reference Implementation
 

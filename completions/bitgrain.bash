@@ -101,4 +101,9 @@ _bitgrain()
     return 0
 }
 
-complete -o nospace -F _bitgrain bitgrain
+# Support common invocation styles:
+#   bitgrain
+#   ./bitgrain
+#   /usr/bin/bitgrain
+#   /usr/local/bin/bitgrain
+complete -o nospace -F _bitgrain bitgrain ./bitgrain /usr/bin/bitgrain /usr/local/bin/bitgrain

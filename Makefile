@@ -17,6 +17,10 @@ CFLAGS_NATIVE ?= -march=native
 RUSTFLAGS_NATIVE ?= -C target-cpu=native
 CFLAGS  += $(CFLAGS_NATIVE)
 
+# Aggressive math flags only for compute hot paths.
+# Keep this scoped (not global) to avoid unintended behavior changes elsewhere.
+HOT_MATH_CFLAGS = -ffast-math -fno-math-errno -fno-trapping-math
+
 # WebP (standard; requires libwebp). pkg-config sets -I and -L when present.
 WEBP_CFLAGS  := $(shell pkg-config --cflags libwebp 2>/dev/null)
 WEBP_LIBS    := $(shell pkg-config --libs libwebp 2>/dev/null)
@@ -109,6 +113,12 @@ c: $(C_OBJS)
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
+c/dct.o: c/dct.c
+	$(CC) $(CFLAGS) $(HOT_MATH_CFLAGS) -c $< -o $@
+
+c/quant.o: c/quant.c
+	$(CC) $(CFLAGS) $(HOT_MATH_CFLAGS) -c $< -o $@
+
 main.o: main.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -154,8 +164,12 @@ install: bitgrain
 	install -m 644 includes/encoder.h $(DESTDIR)$(PREFIX)/include/bitgrain/
 	install -d $(DESTDIR)$(PREFIX)/lib
 	install -m 644 $(RUST_TARGET) $(DESTDIR)$(PREFIX)/lib/libbitgrain.a
+	install -d $(DESTDIR)$(PREFIX)/share/bash-completion/completions
+	install -m 644 completions/bitgrain.bash $(DESTDIR)$(PREFIX)/share/bash-completion/completions/bitgrain
+	install -d $(DESTDIR)$(PREFIX)/share/man/man1
+	install -m 644 man/bitgrain.1 $(DESTDIR)$(PREFIX)/share/man/man1/bitgrain.1
 	@if [ -f $(RUST_SO) ]; then install -m 755 $(RUST_SO) $(DESTDIR)$(PREFIX)/lib/; echo "Installed shared lib: $(PREFIX)/lib/"; fi
-	@echo "Installed: $(DESTDIR)$(PREFIX)/bin/bitgrain, include/bitgrain/encoder.h, lib/libbitgrain.a"
+	@echo "Installed: $(DESTDIR)$(PREFIX)/bin/bitgrain, include/bitgrain/encoder.h, lib/libbitgrain.a, completion and manpage"
 
 # ==============================
 # Rebuild

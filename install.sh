@@ -11,6 +11,7 @@ MAN_DEST_NAME=bitgrain.1
 COMPL_BASH_SRC="completions/bitgrain.bash"
 COMPL_BASH_DEST_DIR=/usr/share/bash-completion/completions
 COMPL_BASH_DEST_NAME=bitgrain
+COMPL_BASH_ALT_DEST_DIR=/usr/local/share/bash-completion/completions
 COMPL_BASH_LEGACY_DIR=/etc/bash_completion.d
 
 if [ ! -f "$BINARY" ]; then
@@ -31,9 +32,15 @@ if [ -f "$COMPL_BASH_SRC" ]; then
 	echo "Installing bash completion to $COMPL_BASH_DEST_DIR (requires sudo)"
 	sudo install -d "$COMPL_BASH_DEST_DIR"
 	sudo install -m 644 "$COMPL_BASH_SRC" "$COMPL_BASH_DEST_DIR/$COMPL_BASH_DEST_NAME"
+	if [ -d "$COMPL_BASH_ALT_DEST_DIR" ]; then
+		echo "Installing bash completion to $COMPL_BASH_ALT_DEST_DIR (requires sudo)"
+		sudo install -m 644 "$COMPL_BASH_SRC" "$COMPL_BASH_ALT_DEST_DIR/$COMPL_BASH_DEST_NAME"
+	fi
 	if [ -d "$COMPL_BASH_LEGACY_DIR" ]; then
 		echo "Installing bash completion to $COMPL_BASH_LEGACY_DIR (requires sudo)"
 		sudo install -m 644 "$COMPL_BASH_SRC" "$COMPL_BASH_LEGACY_DIR/$COMPL_BASH_DEST_NAME"
 	fi
 fi
 echo "Done. Run: $BINARY -v"
+echo "If completion is not active yet, run:"
+echo "  source \"$COMPL_BASH_DEST_DIR/$COMPL_BASH_DEST_NAME\""

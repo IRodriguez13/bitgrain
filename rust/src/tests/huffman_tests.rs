@@ -1,5 +1,8 @@
 use crate::block::Block;
-use crate::huffman::{clamp_block_jpeg_coeffs, decode_plane, encode_plane};
+use crate::huffman::{
+    clamp_block_jpeg_coeffs, decode_plane, decode_plane_with_ac, decode_plane_with_profile, encode_plane,
+    encode_plane_with_ac, encode_plane_with_profile,
+};
 use crate::zigzag::ZIGZAG;
 
 fn make_block(vals: &[(usize, i16)]) -> Block {
@@ -43,6 +46,14 @@ fn huffman_roundtrip_chroma() {
     let block = make_block(&[(0, 20), (1, -15), (4, 8)]);
     let encoded = encode_plane(&[block], true);
     let (decoded, _) = decode_plane(&encoded, 0, 1, true).expect("chroma decode failed");
+    assert_eq!(decoded[0].data, block.data);
+}
+
+#[test]
+fn huffman_roundtrip_chroma_ac_table_v2() {
+    let block = make_block(&[(0, 20), (1, -15), (4, 8), (9, -3), (10, 2)]);
+    let encoded = encode_plane_with_ac(&[block], true, true);
+    let (decoded, _) = decode_plane_with_ac(&encoded, 0, 1, true, true).expect("chroma-v2 decode failed");
     assert_eq!(decoded[0].data, block.data);
 }
 
@@ -119,5 +130,18 @@ fn huffman_roundtrip_stress_random_blocks() {
     let (decoded, _) = decode_plane(&encoded, 0, n_blocks, false).expect("stress decode failed");
     for (i, (orig, dec)) in blocks.iter().zip(decoded.iter()).enumerate() {
         assert_eq!(orig.data, dec.data, "stress mismatch in block {i}");
+    }
+}
+
+#[test]
+fn huffman_roundtrip_dc_delta_profile() {
+    let blocks: Vec<Block> = (0..64i16)
+        .map(|i| make_block(&[(0, i * 13 - 250), (1, i % 7 - 3), (6, (i % 5) - 2)]))
+        .collect();
+    let encoded = encode_plane_with_profile(&blocks, false, false, true);
+    let (decoded, _) =
+        decode_plane_with_profile(&encoded, 0, blocks.len(), false, false, true).expect("dc-delta decode");
+    for (i, (orig, dec)) in blocks.iter().zip(decoded.iter()).enumerate() {
+        assert_eq!(orig.data, dec.data, "dc-delta mismatch in block {i}");
     }
 }

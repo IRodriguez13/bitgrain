@@ -2,6 +2,8 @@
 
 Image compressor (JPEG-like). Encodes to a custom `.bg` stream; decodes to pixels or standard image files. Grayscale, RGB, RGBA. CLI + C API (FFI-backed) with deterministic mode support.
 
+Current focus in `1.2.0`: close the size gap vs JPEG while preserving practical encode/decode speed.
+
 ## Build
 
 Requirements: Rust (stable), GCC (C11), make, **libwebp** (headers + lib).
@@ -66,6 +68,12 @@ Versions:
 - `v3`: RGBA planar + RLE entropy (legacy)
 - `v4`: YCbCr 4:2:0 + Huffman (RGB output)
 - `v5`: YCbCr 4:2:0 + alpha + Huffman (RGBA output)
+- `v6-v7`: chroma AC JPEG table for Cb/Cr
+- `v8-v9`: perceptual quantization profile
+- `v10-v11`: perceptual + chroma AC + DC delta (JPEG-like DC prediction)
+- `v12-v13`: stronger perceptual profile
+- `v14-v15`: aggressive perceptual profile
+- `v16-v17`: very aggressive perceptual profile (best compression in current branch)
 
 ## C API
 
@@ -114,13 +122,35 @@ Especificación pública en [FORMAT.md](FORMAT.md). Permite implementar lectores
 
 ## Benchmark
 
-Comparar Bitgrain vs JPEG/WebP (tamaño y tiempo):
+Comparar Bitgrain vs JPEG/WebP (tamaño y tiempo, `avg/p50/p95`):
 
 ```bash
 ./scripts/benchmark.sh /ruta/imagen.jpg 85
 ```
 
 Requiere: `cjpeg`/`djpeg` (libjpeg), `cwebp`/`dwebp` (libwebp).
+
+Comparación directa Bitgrain vs JPEG, imagen por imagen:
+
+```bash
+./scripts/compare_bg_vs_jpeg.sh /ruta/imagenes 85 3
+```
+
+CSV outputs:
+
+- `bench_out/benchmark.csv`
+- `bench_out/one_by_one/bg_vs_jpeg.csv`
+
+Temporary intermediate files are created under `/tmp` and removed automatically.
+
+### Snapshot (latest local run, quality 85, 4 images)
+
+- Baseline start (older profile): average size delta vs JPEG `+63.48%`
+- Current `v16/v17`: average size delta vs JPEG `+29.43%` (gap reduced by `34.05` points)
+- Sample per-image ratio (`bg/jpg`): `1.9381x`, `0.6843x`, `0.9585x`, `1.5964x`
+- Speed remains competitive in this sample set (Bitgrain often wins decode, sometimes encode)
+
+Use these numbers as project snapshot, not absolute truth: results vary with dataset and quality target.
 
 ## Roadmap
 

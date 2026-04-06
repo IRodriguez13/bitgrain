@@ -1,4 +1,4 @@
-.TH BITGRAIN 1 "2026-04-05" "Bitgrain 1.1.0" "User Commands"
+.TH BITGRAIN 1 "2026-04-05" "Bitgrain 1.2.0" "User Commands"
 .SH NAME
 bitgrain \- JPEG-like image compressor using the .bg format
 .SH SYNOPSIS
@@ -186,7 +186,15 @@ The header is 12 bytes:
 .IP "\(bu" 2
 Magic "BG" (0x42 0x47)
 .IP "\(bu" 2
-Version: 1=grayscale (RLE), 2=RGB (RLE), 3=RGBA (RLE), 4=YCbCr420 (Huffman), 5=YCbCr420A (Huffman)
+Version families:
+1=grayscale (RLE), 2=RGB (RLE), 3=RGBA (RLE),
+4/5=YCbCr420(+A) Huffman,
+6/7=chroma AC JPEG table,
+8/9=perceptual quantization,
+10/11=perceptual + chroma AC + DC delta,
+12/13=stronger perceptual,
+14/15=aggressive perceptual,
+16/17=very aggressive perceptual.
 .IP "\(bu" 2
 Width (uint32 little-endian)
 .IP "\(bu" 2

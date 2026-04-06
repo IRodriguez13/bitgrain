@@ -5,6 +5,18 @@
 //!   v3: RGBA planar, RLE
 //!   v4: YCbCr 4:2:0, Huffman  → RGB output
 //!   v5: YCbCr 4:2:0 + A, Huffman → RGBA output
+//!   v6: YCbCr 4:2:0, Huffman + chroma AC table → RGB output
+//!   v7: YCbCr 4:2:0 + A, Huffman + chroma AC table → RGBA output
+//!   v8: YCbCr 4:2:0, perceptual quant + chroma AC → RGB output
+//!   v9: YCbCr 4:2:0 + A, perceptual quant + chroma AC → RGBA output
+//!  v10: YCbCr 4:2:0, perceptual quant + chroma AC + DC delta → RGB output
+//!  v11: YCbCr 4:2:0 + A, perceptual quant + chroma AC + DC delta → RGBA output
+//!  v12: YCbCr 4:2:0, stronger perceptual quant + chroma AC + DC delta → RGB output
+//!  v13: YCbCr 4:2:0 + A, stronger perceptual quant + chroma AC + DC delta → RGBA output
+//!  v14: YCbCr 4:2:0, aggressive perceptual quant + chroma AC + DC delta → RGB output
+//!  v15: YCbCr 4:2:0 + A, aggressive perceptual quant + chroma AC + DC delta → RGBA output
+//!  v16: YCbCr 4:2:0, very aggressive perceptual quant + chroma AC + DC delta → RGB output
+//!  v17: YCbCr 4:2:0 + A, very aggressive perceptual quant + chroma AC + DC delta → RGBA output
 
 use crate::block::Block;
 use crate::colorspace;
@@ -96,13 +108,16 @@ fn decode_plane_huffman(
     w: usize, h: usize,
     quant: &[i16; 64],
     is_chroma: bool,
+    use_chroma_ac: bool,
+    use_dc_delta: bool,
     plane: &mut [u8],
 ) -> Option<usize> {
     let bw = (w + 7) / 8;
     let bh = (h + 7) / 8;
     let n  = bw * bh;
 
-    let (mut blocks, new_pos) = huffman::decode_plane(buffer, pos, n, is_chroma)?;
+    let (mut blocks, new_pos) =
+        huffman::decode_plane_with_profile(buffer, pos, n, is_chroma, use_chroma_ac, use_dc_delta)?;
 
     // Parallel dequant + IDCT
     blocks.par_iter_mut().for_each(|block| {
@@ -163,7 +178,7 @@ pub fn decode(
     }
 
     let version = buffer[2];
-    if version == 0 || version > 5 {
+    if version == 0 || version > 17 {
         return false;
     }
 
@@ -245,9 +260,9 @@ pub fn decode(
         let mut cr_plane = vec![0u8; cw * ch];
 
         let mut pos = header_size;
-        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, &mut y_plane)  { Some(p) => p, None => return false };
-        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  &mut cb_plane) { Some(p) => p, None => return false };
-        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  &mut cr_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, false, false, &mut y_plane)  { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  false, false, &mut cb_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  false, false, &mut cr_plane) { Some(p) => p, None => return false };
 
         colorspace::ycbcr420_to_rgb(&y_plane, &cb_plane, &cr_plane, w, h, out_pixels);
 
@@ -275,10 +290,370 @@ pub fn decode(
         let mut a_plane  = vec![0u8; w * h];
 
         let mut pos = header_size;
-        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, &mut y_plane)  { Some(p) => p, None => return false };
-        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  &mut cb_plane) { Some(p) => p, None => return false };
-        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  &mut cr_plane) { Some(p) => p, None => return false };
-        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, &mut a_plane)  { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, false, false, &mut y_plane)  { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  false, false, &mut cb_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  false, false, &mut cr_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, false, false, &mut a_plane)  { Some(p) => p, None => return false };
+
+        colorspace::ycbcr420a_to_rgba(&y_plane, &cb_plane, &cr_plane, &a_plane, w, h, out_pixels);
+
+        if let Some(v) = out_icc {
+            if let Some((icc, _)) = parse_icc_trailer(buffer, pos) { *v = icc; }
+        }
+        return true;
+    }
+
+    // ---- v6: YCbCr 4:2:0 + Huffman (chroma AC) → RGB ----
+    if version == 6 {
+        if out_pixels.len() < w * h * 3 {
+            return false;
+        }
+        *out_width = width; *out_height = height; *out_channels = 3;
+
+        let cw = (w + 1) / 2;
+        let ch = (h + 1) / 2;
+        let luma_q   = encoder::quant_table_for_quality(q);
+        let chroma_q = encoder::chroma_quant_table_for_quality(q);
+
+        let mut y_plane  = vec![0u8; w * h];
+        let mut cb_plane = vec![0u8; cw * ch];
+        let mut cr_plane = vec![0u8; cw * ch];
+
+        let mut pos = header_size;
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, false, false, &mut y_plane)  { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  false, &mut cb_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  false, &mut cr_plane) { Some(p) => p, None => return false };
+
+        colorspace::ycbcr420_to_rgb(&y_plane, &cb_plane, &cr_plane, w, h, out_pixels);
+
+        if let Some(v) = out_icc {
+            if let Some((icc, _)) = parse_icc_trailer(buffer, pos) { *v = icc; }
+        }
+        return true;
+    }
+
+    // ---- v7: YCbCr 4:2:0 + A + Huffman (chroma AC) → RGBA ----
+    if version == 7 {
+        if out_pixels.len() < w * h * 4 {
+            return false;
+        }
+        *out_width = width; *out_height = height; *out_channels = 4;
+
+        let cw = (w + 1) / 2;
+        let ch = (h + 1) / 2;
+        let luma_q   = encoder::quant_table_for_quality(q);
+        let chroma_q = encoder::chroma_quant_table_for_quality(q);
+
+        let mut y_plane  = vec![0u8; w * h];
+        let mut cb_plane = vec![0u8; cw * ch];
+        let mut cr_plane = vec![0u8; cw * ch];
+        let mut a_plane  = vec![0u8; w * h];
+
+        let mut pos = header_size;
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, false, false, &mut y_plane)  { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  false, &mut cb_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  false, &mut cr_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, false, false, &mut a_plane)  { Some(p) => p, None => return false };
+
+        colorspace::ycbcr420a_to_rgba(&y_plane, &cb_plane, &cr_plane, &a_plane, w, h, out_pixels);
+
+        if let Some(v) = out_icc {
+            if let Some((icc, _)) = parse_icc_trailer(buffer, pos) { *v = icc; }
+        }
+        return true;
+    }
+
+    // ---- v8: YCbCr 4:2:0 + Huffman (perceptual quant + chroma AC) → RGB ----
+    if version == 8 {
+        if out_pixels.len() < w * h * 3 {
+            return false;
+        }
+        *out_width = width; *out_height = height; *out_channels = 3;
+
+        let cw = (w + 1) / 2;
+        let ch = (h + 1) / 2;
+        let luma_q   = encoder::quant_table_for_quality_perceptual(q);
+        let chroma_q = encoder::chroma_quant_table_for_quality_perceptual(q);
+
+        let mut y_plane  = vec![0u8; w * h];
+        let mut cb_plane = vec![0u8; cw * ch];
+        let mut cr_plane = vec![0u8; cw * ch];
+
+        let mut pos = header_size;
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, false, false, &mut y_plane)  { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  false, &mut cb_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  false, &mut cr_plane) { Some(p) => p, None => return false };
+
+        colorspace::ycbcr420_to_rgb(&y_plane, &cb_plane, &cr_plane, w, h, out_pixels);
+
+        if let Some(v) = out_icc {
+            if let Some((icc, _)) = parse_icc_trailer(buffer, pos) { *v = icc; }
+        }
+        return true;
+    }
+
+    // ---- v9: YCbCr 4:2:0 + A + Huffman (perceptual quant + chroma AC) → RGBA ----
+    if version == 9 {
+        if out_pixels.len() < w * h * 4 {
+            return false;
+        }
+        *out_width = width; *out_height = height; *out_channels = 4;
+
+        let cw = (w + 1) / 2;
+        let ch = (h + 1) / 2;
+        let luma_q   = encoder::quant_table_for_quality_perceptual(q);
+        let chroma_q = encoder::chroma_quant_table_for_quality_perceptual(q);
+
+        let mut y_plane  = vec![0u8; w * h];
+        let mut cb_plane = vec![0u8; cw * ch];
+        let mut cr_plane = vec![0u8; cw * ch];
+        let mut a_plane  = vec![0u8; w * h];
+
+        let mut pos = header_size;
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, false, false, &mut y_plane)  { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  false, &mut cb_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  false, &mut cr_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, false, false, &mut a_plane)  { Some(p) => p, None => return false };
+
+        colorspace::ycbcr420a_to_rgba(&y_plane, &cb_plane, &cr_plane, &a_plane, w, h, out_pixels);
+
+        if let Some(v) = out_icc {
+            if let Some((icc, _)) = parse_icc_trailer(buffer, pos) { *v = icc; }
+        }
+        return true;
+    }
+
+    // ---- v10: YCbCr 4:2:0 + Huffman (perceptual quant + chroma AC + DC delta) → RGB ----
+    if version == 10 {
+        if out_pixels.len() < w * h * 3 {
+            return false;
+        }
+        *out_width = width; *out_height = height; *out_channels = 3;
+
+        let cw = (w + 1) / 2;
+        let ch = (h + 1) / 2;
+        let luma_q   = encoder::quant_table_for_quality_perceptual(q);
+        let chroma_q = encoder::chroma_quant_table_for_quality_perceptual(q);
+
+        let mut y_plane  = vec![0u8; w * h];
+        let mut cb_plane = vec![0u8; cw * ch];
+        let mut cr_plane = vec![0u8; cw * ch];
+
+        let mut pos = header_size;
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, false, true, &mut y_plane)  { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  true, &mut cb_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  true, &mut cr_plane) { Some(p) => p, None => return false };
+
+        colorspace::ycbcr420_to_rgb(&y_plane, &cb_plane, &cr_plane, w, h, out_pixels);
+
+        if let Some(v) = out_icc {
+            if let Some((icc, _)) = parse_icc_trailer(buffer, pos) { *v = icc; }
+        }
+        return true;
+    }
+
+    // ---- v11: YCbCr 4:2:0 + A + Huffman (perceptual quant + chroma AC + DC delta) → RGBA ----
+    if version == 11 {
+        if out_pixels.len() < w * h * 4 {
+            return false;
+        }
+        *out_width = width; *out_height = height; *out_channels = 4;
+
+        let cw = (w + 1) / 2;
+        let ch = (h + 1) / 2;
+        let luma_q   = encoder::quant_table_for_quality_perceptual(q);
+        let chroma_q = encoder::chroma_quant_table_for_quality_perceptual(q);
+
+        let mut y_plane  = vec![0u8; w * h];
+        let mut cb_plane = vec![0u8; cw * ch];
+        let mut cr_plane = vec![0u8; cw * ch];
+        let mut a_plane  = vec![0u8; w * h];
+
+        let mut pos = header_size;
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, false, true, &mut y_plane)  { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  true, &mut cb_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  true, &mut cr_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, false, true, &mut a_plane)  { Some(p) => p, None => return false };
+
+        colorspace::ycbcr420a_to_rgba(&y_plane, &cb_plane, &cr_plane, &a_plane, w, h, out_pixels);
+
+        if let Some(v) = out_icc {
+            if let Some((icc, _)) = parse_icc_trailer(buffer, pos) { *v = icc; }
+        }
+        return true;
+    }
+
+    // ---- v12: YCbCr 4:2:0 + Huffman (strong perceptual quant + chroma AC + DC delta) → RGB ----
+    if version == 12 {
+        if out_pixels.len() < w * h * 3 {
+            return false;
+        }
+        *out_width = width; *out_height = height; *out_channels = 3;
+
+        let cw = (w + 1) / 2;
+        let ch = (h + 1) / 2;
+        let luma_q   = encoder::quant_table_for_quality_perceptual_v2(q);
+        let chroma_q = encoder::chroma_quant_table_for_quality_perceptual_v2(q);
+
+        let mut y_plane  = vec![0u8; w * h];
+        let mut cb_plane = vec![0u8; cw * ch];
+        let mut cr_plane = vec![0u8; cw * ch];
+
+        let mut pos = header_size;
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, false, true, &mut y_plane)  { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  true, &mut cb_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  true, &mut cr_plane) { Some(p) => p, None => return false };
+
+        colorspace::ycbcr420_to_rgb(&y_plane, &cb_plane, &cr_plane, w, h, out_pixels);
+
+        if let Some(v) = out_icc {
+            if let Some((icc, _)) = parse_icc_trailer(buffer, pos) { *v = icc; }
+        }
+        return true;
+    }
+
+    // ---- v13: YCbCr 4:2:0 + A + Huffman (strong perceptual quant + chroma AC + DC delta) → RGBA ----
+    if version == 13 {
+        if out_pixels.len() < w * h * 4 {
+            return false;
+        }
+        *out_width = width; *out_height = height; *out_channels = 4;
+
+        let cw = (w + 1) / 2;
+        let ch = (h + 1) / 2;
+        let luma_q   = encoder::quant_table_for_quality_perceptual_v2(q);
+        let chroma_q = encoder::chroma_quant_table_for_quality_perceptual_v2(q);
+
+        let mut y_plane  = vec![0u8; w * h];
+        let mut cb_plane = vec![0u8; cw * ch];
+        let mut cr_plane = vec![0u8; cw * ch];
+        let mut a_plane  = vec![0u8; w * h];
+
+        let mut pos = header_size;
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, false, true, &mut y_plane)  { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  true, &mut cb_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  true, &mut cr_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, false, true, &mut a_plane)  { Some(p) => p, None => return false };
+
+        colorspace::ycbcr420a_to_rgba(&y_plane, &cb_plane, &cr_plane, &a_plane, w, h, out_pixels);
+
+        if let Some(v) = out_icc {
+            if let Some((icc, _)) = parse_icc_trailer(buffer, pos) { *v = icc; }
+        }
+        return true;
+    }
+
+    // ---- v14: YCbCr 4:2:0 + Huffman (aggressive perceptual quant + chroma AC + DC delta) → RGB ----
+    if version == 14 {
+        if out_pixels.len() < w * h * 3 {
+            return false;
+        }
+        *out_width = width; *out_height = height; *out_channels = 3;
+
+        let cw = (w + 1) / 2;
+        let ch = (h + 1) / 2;
+        let luma_q   = encoder::quant_table_for_quality_perceptual_v3(q);
+        let chroma_q = encoder::chroma_quant_table_for_quality_perceptual_v3(q);
+
+        let mut y_plane  = vec![0u8; w * h];
+        let mut cb_plane = vec![0u8; cw * ch];
+        let mut cr_plane = vec![0u8; cw * ch];
+
+        let mut pos = header_size;
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, false, true, &mut y_plane)  { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  true, &mut cb_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  true, &mut cr_plane) { Some(p) => p, None => return false };
+
+        colorspace::ycbcr420_to_rgb(&y_plane, &cb_plane, &cr_plane, w, h, out_pixels);
+
+        if let Some(v) = out_icc {
+            if let Some((icc, _)) = parse_icc_trailer(buffer, pos) { *v = icc; }
+        }
+        return true;
+    }
+
+    // ---- v15: YCbCr 4:2:0 + A + Huffman (aggressive perceptual quant + chroma AC + DC delta) → RGBA ----
+    if version == 15 {
+        if out_pixels.len() < w * h * 4 {
+            return false;
+        }
+        *out_width = width; *out_height = height; *out_channels = 4;
+
+        let cw = (w + 1) / 2;
+        let ch = (h + 1) / 2;
+        let luma_q   = encoder::quant_table_for_quality_perceptual_v3(q);
+        let chroma_q = encoder::chroma_quant_table_for_quality_perceptual_v3(q);
+
+        let mut y_plane  = vec![0u8; w * h];
+        let mut cb_plane = vec![0u8; cw * ch];
+        let mut cr_plane = vec![0u8; cw * ch];
+        let mut a_plane  = vec![0u8; w * h];
+
+        let mut pos = header_size;
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, false, true, &mut y_plane)  { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  true, &mut cb_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  true, &mut cr_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, false, true, &mut a_plane)  { Some(p) => p, None => return false };
+
+        colorspace::ycbcr420a_to_rgba(&y_plane, &cb_plane, &cr_plane, &a_plane, w, h, out_pixels);
+
+        if let Some(v) = out_icc {
+            if let Some((icc, _)) = parse_icc_trailer(buffer, pos) { *v = icc; }
+        }
+        return true;
+    }
+
+    // ---- v16: YCbCr 4:2:0 + Huffman (very aggressive perceptual quant + chroma AC + DC delta) → RGB ----
+    if version == 16 {
+        if out_pixels.len() < w * h * 3 {
+            return false;
+        }
+        *out_width = width; *out_height = height; *out_channels = 3;
+
+        let cw = (w + 1) / 2;
+        let ch = (h + 1) / 2;
+        let luma_q   = encoder::quant_table_for_quality_perceptual_v4(q);
+        let chroma_q = encoder::chroma_quant_table_for_quality_perceptual_v4(q);
+
+        let mut y_plane  = vec![0u8; w * h];
+        let mut cb_plane = vec![0u8; cw * ch];
+        let mut cr_plane = vec![0u8; cw * ch];
+
+        let mut pos = header_size;
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, false, true, &mut y_plane)  { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  true, &mut cb_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  true, &mut cr_plane) { Some(p) => p, None => return false };
+
+        colorspace::ycbcr420_to_rgb(&y_plane, &cb_plane, &cr_plane, w, h, out_pixels);
+
+        if let Some(v) = out_icc {
+            if let Some((icc, _)) = parse_icc_trailer(buffer, pos) { *v = icc; }
+        }
+        return true;
+    }
+
+    // ---- v17: YCbCr 4:2:0 + A + Huffman (very aggressive perceptual quant + chroma AC + DC delta) → RGBA ----
+    if version == 17 {
+        if out_pixels.len() < w * h * 4 {
+            return false;
+        }
+        *out_width = width; *out_height = height; *out_channels = 4;
+
+        let cw = (w + 1) / 2;
+        let ch = (h + 1) / 2;
+        let luma_q   = encoder::quant_table_for_quality_perceptual_v4(q);
+        let chroma_q = encoder::chroma_quant_table_for_quality_perceptual_v4(q);
+
+        let mut y_plane  = vec![0u8; w * h];
+        let mut cb_plane = vec![0u8; cw * ch];
+        let mut cr_plane = vec![0u8; cw * ch];
+        let mut a_plane  = vec![0u8; w * h];
+
+        let mut pos = header_size;
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, false, true, &mut y_plane)  { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  true, &mut cb_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, cw, ch, &chroma_q, true,  true,  true, &mut cr_plane) { Some(p) => p, None => return false };
+        pos = match decode_plane_huffman(buffer, pos, w,  h,  &luma_q,   false, false, true, &mut a_plane)  { Some(p) => p, None => return false };
 
         colorspace::ycbcr420a_to_rgba(&y_plane, &cb_plane, &cr_plane, &a_plane, w, h, out_pixels);
 

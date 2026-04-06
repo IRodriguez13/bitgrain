@@ -5,7 +5,7 @@
 #include "path_utils.h"
 #include <stdint.h>
 
-#define BITGRAIN_VERSION "1.1.0"
+#define BITGRAIN_VERSION "1.2.0"
 
 typedef struct {
     path_list_t expanded;

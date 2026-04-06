@@ -16,13 +16,25 @@ use rayon::prelude::*;
 ///   3 = RGBA planar,RLE entropy   (legacy)
 ///   4 = YCbCr 4:2:0, Huffman     (RGB input, best compression)
 ///   5 = YCbCr 4:2:0 + A, Huffman (RGBA input)
+///   6 = YCbCr 4:2:0, Huffman + chroma AC table (RGB input, improved size)
+///   7 = YCbCr 4:2:0 + A, Huffman + chroma AC table (RGBA input, improved size)
+///   8 = YCbCr 4:2:0, perceptual quant + chroma AC (RGB input, better size)
+///   9 = YCbCr 4:2:0 + A, perceptual quant + chroma AC (RGBA input, better size)
+///  10 = YCbCr 4:2:0, perceptual quant + chroma AC + DC delta (JPEG-like)
+///  11 = YCbCr 4:2:0 + A, perceptual quant + chroma AC + DC delta (JPEG-like)
+///  12 = YCbCr 4:2:0, stronger perceptual quant + chroma AC + DC delta
+///  13 = YCbCr 4:2:0 + A, stronger perceptual quant + chroma AC + DC delta
+///  14 = YCbCr 4:2:0, aggressive perceptual quant + chroma AC + DC delta
+///  15 = YCbCr 4:2:0 + A, aggressive perceptual quant + chroma AC + DC delta
+///  16 = YCbCr 4:2:0, very aggressive perceptual quant + chroma AC + DC delta
+///  17 = YCbCr 4:2:0 + A, very aggressive perceptual quant + chroma AC + DC delta
 pub const BG_HEADER_SIZE: usize = 3 + 4 + 4 + 1;
 
 const BG_MAGIC_GRAY:    &[u8; 3] = b"BG\x01";
 const BG_MAGIC_RGB:     &[u8; 3] = b"BG\x02";
 const BG_MAGIC_RGBA:    &[u8; 3] = b"BG\x03";
-const BG_MAGIC_YUV420:  &[u8; 3] = b"BG\x04";
-const BG_MAGIC_YUV420A: &[u8; 3] = b"BG\x05";
+const BG_MAGIC_YUV420_V7:  &[u8; 3] = b"BG\x10";
+const BG_MAGIC_YUV420A_V7: &[u8; 3] = b"BG\x11";
 
 /// Standard JPEG luminance quantization table (quality ~50).
 pub fn default_quant_table() -> [i16; 64] {
@@ -71,6 +83,187 @@ fn scale_quant_table(base: &[i16; 64], quality: u8) -> [i16; 64] {
         out[i] = v.clamp(1, 255) as i16;
     }
     out
+}
+
+fn scale_quant_table_perceptual(base: &[i16; 64], quality: u8, chroma: bool) -> [i16; 64] {
+    // Conservative perceptual tuning:
+    // - stronger attenuation on chroma detail
+    // - progressively stronger quantization toward high frequencies
+    let mut out = scale_quant_table(base, quality);
+    // 8x8 weights (percent). Top-left keeps detail; bottom-right compresses harder.
+    const LUMA_W: [i32; 64] = [
+        100,100,100,102,104,106,108,110,
+        100,100,102,104,106,108,110,112,
+        100,102,104,106,108,110,114,118,
+        102,104,106,108,110,114,118,122,
+        104,106,108,110,114,118,122,128,
+        106,108,110,114,118,122,128,134,
+        108,110,114,118,122,128,134,142,
+        110,112,118,122,128,134,142,152,
+    ];
+    const CHROMA_W: [i32; 64] = [
+        112,114,116,120,124,128,132,136,
+        114,116,120,124,128,132,136,142,
+        116,120,124,128,132,136,142,148,
+        120,124,128,132,136,142,148,156,
+        124,128,132,136,142,148,156,166,
+        128,132,136,142,148,156,166,178,
+        132,136,142,148,156,166,178,192,
+        136,142,148,156,166,178,192,208,
+    ];
+    let w = if chroma { &CHROMA_W } else { &LUMA_W };
+    for i in 0..64 {
+        let v = (out[i] as i32 * w[i] + 50) / 100;
+        out[i] = v.clamp(1, 255) as i16;
+    }
+    out
+}
+
+pub fn quant_table_for_quality_perceptual(quality: u8) -> [i16; 64] {
+    scale_quant_table_perceptual(&default_quant_table(), quality, false)
+}
+
+pub fn chroma_quant_table_for_quality_perceptual(quality: u8) -> [i16; 64] {
+    scale_quant_table_perceptual(&default_chroma_quant_table(), quality, true)
+}
+
+fn scale_quant_table_perceptual_v2(base: &[i16; 64], quality: u8, chroma: bool) -> [i16; 64] {
+    // Stronger than v1 perceptual profile, still bounded and deterministic.
+    let mut out = scale_quant_table(base, quality);
+    const LUMA_W2: [i32; 64] = [
+        100,100,102,104,108,112,116,122,
+        100,102,104,108,112,116,122,128,
+        102,104,108,112,116,122,130,138,
+        104,108,112,116,122,130,138,148,
+        108,112,116,122,130,138,148,160,
+        112,116,122,130,138,148,160,174,
+        116,122,130,138,148,160,174,190,
+        122,128,138,148,160,174,190,208,
+    ];
+    const CHROMA_W2: [i32; 64] = [
+        125,130,136,144,152,162,174,188,
+        130,136,144,152,162,174,188,204,
+        136,144,152,162,174,188,204,222,
+        144,152,162,174,188,204,222,242,
+        152,162,174,188,204,222,242,255,
+        162,174,188,204,222,242,255,255,
+        174,188,204,222,242,255,255,255,
+        188,204,222,242,255,255,255,255,
+    ];
+    let w = if chroma { &CHROMA_W2 } else { &LUMA_W2 };
+    for i in 0..64 {
+        let mut v = (out[i] as i32 * w[i] + 50) / 100;
+        // Slightly more pressure at medium/low quality to close size gap.
+        if quality <= 85 {
+            if chroma {
+                v = (v * 106 + 50) / 100;
+            } else if i >= 32 {
+                v = (v * 103 + 50) / 100;
+            }
+        }
+        out[i] = v.clamp(1, 255) as i16;
+    }
+    out
+}
+
+pub fn quant_table_for_quality_perceptual_v2(quality: u8) -> [i16; 64] {
+    scale_quant_table_perceptual_v2(&default_quant_table(), quality, false)
+}
+
+pub fn chroma_quant_table_for_quality_perceptual_v2(quality: u8) -> [i16; 64] {
+    scale_quant_table_perceptual_v2(&default_chroma_quant_table(), quality, true)
+}
+
+fn scale_quant_table_perceptual_v3(base: &[i16; 64], quality: u8, chroma: bool) -> [i16; 64] {
+    // Experimental aggressive profile to probe size-gap closure.
+    let mut out = scale_quant_table(base, quality);
+    const LUMA_W3: [i32; 64] = [
+        102,104,108,112,118,126,136,148,
+        104,108,112,118,126,136,148,162,
+        108,112,118,126,136,148,162,178,
+        112,118,126,136,148,162,178,196,
+        118,126,136,148,162,178,196,216,
+        126,136,148,162,178,196,216,238,
+        136,148,162,178,196,216,238,255,
+        148,162,178,196,216,238,255,255,
+    ];
+    const CHROMA_W3: [i32; 64] = [
+        145,154,166,180,196,214,234,255,
+        154,166,180,196,214,234,255,255,
+        166,180,196,214,234,255,255,255,
+        180,196,214,234,255,255,255,255,
+        196,214,234,255,255,255,255,255,
+        214,234,255,255,255,255,255,255,
+        234,255,255,255,255,255,255,255,
+        255,255,255,255,255,255,255,255,
+    ];
+    let w = if chroma { &CHROMA_W3 } else { &LUMA_W3 };
+    for i in 0..64 {
+        let mut v = (out[i] as i32 * w[i] + 50) / 100;
+        if quality <= 92 {
+            if chroma {
+                v = (v * 112 + 50) / 100;
+            } else if i >= 24 {
+                v = (v * 106 + 50) / 100;
+            }
+        }
+        out[i] = v.clamp(1, 255) as i16;
+    }
+    out
+}
+
+pub fn quant_table_for_quality_perceptual_v3(quality: u8) -> [i16; 64] {
+    scale_quant_table_perceptual_v3(&default_quant_table(), quality, false)
+}
+
+pub fn chroma_quant_table_for_quality_perceptual_v3(quality: u8) -> [i16; 64] {
+    scale_quant_table_perceptual_v3(&default_chroma_quant_table(), quality, true)
+}
+
+fn scale_quant_table_perceptual_v4(base: &[i16; 64], quality: u8, chroma: bool) -> [i16; 64] {
+    // Very aggressive profile for compression experiments.
+    let mut out = scale_quant_table(base, quality);
+    const LUMA_W4: [i32; 64] = [
+        106,112,120,130,142,156,172,190,
+        112,120,130,142,156,172,190,210,
+        120,130,142,156,172,190,210,232,
+        130,142,156,172,190,210,232,255,
+        142,156,172,190,210,232,255,255,
+        156,172,190,210,232,255,255,255,
+        172,190,210,232,255,255,255,255,
+        190,210,232,255,255,255,255,255,
+    ];
+    const CHROMA_W4: [i32; 64] = [
+        170,184,200,218,238,255,255,255,
+        184,200,218,238,255,255,255,255,
+        200,218,238,255,255,255,255,255,
+        218,238,255,255,255,255,255,255,
+        238,255,255,255,255,255,255,255,
+        255,255,255,255,255,255,255,255,
+        255,255,255,255,255,255,255,255,
+        255,255,255,255,255,255,255,255,
+    ];
+    let w = if chroma { &CHROMA_W4 } else { &LUMA_W4 };
+    for i in 0..64 {
+        let mut v = (out[i] as i32 * w[i] + 50) / 100;
+        if quality <= 95 {
+            if chroma {
+                v = (v * 118 + 50) / 100;
+            } else if i >= 20 {
+                v = (v * 109 + 50) / 100;
+            }
+        }
+        out[i] = v.clamp(1, 255) as i16;
+    }
+    out
+}
+
+pub fn quant_table_for_quality_perceptual_v4(quality: u8) -> [i16; 64] {
+    scale_quant_table_perceptual_v4(&default_quant_table(), quality, false)
+}
+
+pub fn chroma_quant_table_for_quality_perceptual_v4(quality: u8) -> [i16; 64] {
+    scale_quant_table_perceptual_v4(&default_chroma_quant_table(), quality, true)
 }
 
 #[inline]
@@ -144,13 +337,19 @@ pub fn encode_grayscale(
 // ---------------------------------------------------------------------------
 
 /// Encode blocks with Huffman into a Vec<u8>. Parallel DCT+quant, sequential Huffman.
-fn encode_channel_huffman(blocks: &mut [Block], table: &[i16; 64], is_chroma: bool) -> Vec<u8> {
+fn encode_channel_huffman(
+    blocks: &mut [Block],
+    table: &[i16; 64],
+    is_chroma: bool,
+    use_chroma_ac: bool,
+    use_dc_delta: bool,
+) -> Vec<u8> {
     blocks.par_iter_mut().for_each(|block| {
         dct::dct(block);
         quantize(&mut block.data, table);
         huffman::clamp_block_jpeg_coeffs(block);
     });
-    huffman::encode_plane(blocks, is_chroma)
+    huffman::encode_plane_with_profile(blocks, is_chroma, use_chroma_ac, use_dc_delta)
 }
 
 /// Encode RGB image using YCbCr 4:2:0 + Huffman (version 4).
@@ -159,14 +358,14 @@ pub fn encode_rgb_ycbcr(
     image: &[u8], width: usize, height: usize, quality: u8,
     out: &mut [u8], pos: &mut i32, icc: Option<&[u8]>,
 ) {
-    write_header(out, pos, BG_MAGIC_YUV420, width, height, quality);
+    write_header(out, pos, BG_MAGIC_YUV420_V7, width, height, quality);
 
     let (y, cb, cr) = colorspace::rgb_to_ycbcr420(image, width, height);
     let cw = (width  + 1) / 2;
     let ch = (height + 1) / 2;
 
-    let luma_table   = quant_table_for_quality(quality);
-    let chroma_table = chroma_quant_table_for_quality(quality);
+    let luma_table   = quant_table_for_quality_perceptual_v4(quality);
+    let chroma_table = chroma_quant_table_for_quality_perceptual_v4(quality);
 
     // Encode Y, Cb, Cr in parallel — each into its own buffer
     let blockizer_full   = Blockizer::new(width, height);
@@ -176,17 +375,17 @@ pub fn encode_rgb_ycbcr(
     let (y_buf, (cb_buf, cr_buf)) = rayon::join(
         || {
             let mut blocks = blockizer_full.generate_blocks(&y);
-            encode_channel_huffman(&mut blocks, &luma_table, false)
+            encode_channel_huffman(&mut blocks, &luma_table, false, false, true)
         },
         || {
             rayon::join(
                 || {
                     let mut blocks = blockizer_chroma.generate_blocks(&cb);
-                    encode_channel_huffman(&mut blocks, &chroma_table, true)
+                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true)
                 },
                 || {
                     let mut blocks = blockizer_chroma.generate_blocks(&cr);
-                    encode_channel_huffman(&mut blocks, &chroma_table, true)
+                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true)
                 },
             )
         },
@@ -203,14 +402,14 @@ pub fn encode_rgba_ycbcr(
     image: &[u8], width: usize, height: usize, quality: u8,
     out: &mut [u8], pos: &mut i32, icc: Option<&[u8]>,
 ) {
-    write_header(out, pos, BG_MAGIC_YUV420A, width, height, quality);
+    write_header(out, pos, BG_MAGIC_YUV420A_V7, width, height, quality);
 
     let (y, cb, cr, a) = colorspace::rgba_to_ycbcr420a(image, width, height);
     let cw = (width  + 1) / 2;
     let ch = (height + 1) / 2;
 
-    let luma_table   = quant_table_for_quality(quality);
-    let chroma_table = chroma_quant_table_for_quality(quality);
+    let luma_table   = quant_table_for_quality_perceptual_v4(quality);
+    let chroma_table = chroma_quant_table_for_quality_perceptual_v4(quality);
 
     let blockizer_full   = Blockizer::new(width, height);
     let blockizer_chroma = Blockizer::new(cw, ch);
@@ -220,11 +419,11 @@ pub fn encode_rgba_ycbcr(
             rayon::join(
                 || {
                     let mut blocks = blockizer_full.generate_blocks(&y);
-                    encode_channel_huffman(&mut blocks, &luma_table, false)
+                    encode_channel_huffman(&mut blocks, &luma_table, false, false, true)
                 },
                 || {
                     let mut blocks = blockizer_full.generate_blocks(&a);
-                    encode_channel_huffman(&mut blocks, &luma_table, false)
+                    encode_channel_huffman(&mut blocks, &luma_table, false, false, true)
                 },
             )
         },
@@ -232,11 +431,11 @@ pub fn encode_rgba_ycbcr(
             rayon::join(
                 || {
                     let mut blocks = blockizer_chroma.generate_blocks(&cb);
-                    encode_channel_huffman(&mut blocks, &chroma_table, true)
+                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true)
                 },
                 || {
                     let mut blocks = blockizer_chroma.generate_blocks(&cr);
-                    encode_channel_huffman(&mut blocks, &chroma_table, true)
+                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true)
                 },
             )
         },
