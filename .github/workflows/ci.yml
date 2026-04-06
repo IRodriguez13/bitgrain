@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+    branches:
+      - "**"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libwebp-dev libpng-dev
+
+      - name: Run Rust tests (release)
+        working-directory: rust
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/rust/target
+          RUSTFLAGS: -C target-cpu=native
+        run: cargo test --release
+
+      - name: Build CLI
+        run: make bitgrain
+
+      - name: Run integration tests
+        run: ./tests/integration.sh

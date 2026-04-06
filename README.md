@@ -2,7 +2,7 @@
 
 Image compressor (JPEG-like). Encodes to a custom `.bg` stream; decodes to pixels or standard image files. Grayscale, RGB, RGBA. CLI + C API (FFI-backed) with deterministic mode support.
 
-Current focus in `1.2.0`: close the size gap vs JPEG while preserving practical encode/decode speed.
+Current focus in `2.0.0`: close the size gap vs JPEG while preserving practical encode/decode speed.
 
 ## Build
 
@@ -73,7 +73,8 @@ Versions:
 - `v10-v11`: perceptual + chroma AC + DC delta (JPEG-like DC prediction)
 - `v12-v13`: stronger perceptual profile
 - `v14-v15`: aggressive perceptual profile
-- `v16-v17`: very aggressive perceptual profile (best compression in current branch)
+- `v16-v17`: very aggressive perceptual profile
+- `v18-v19`: ultra perceptual + AC sparsify profile (best compression in current branch)
 
 ## C API
 

@@ -6,6 +6,7 @@ use crate::dct;
 use crate::entropy;
 use crate::ffi::quantize_block;
 use crate::huffman;
+use crate::zigzag::ZIGZAG;
 use rayon::prelude::*;
 
 /// .bg header: "BG" + version + width(u32 LE) + height(u32 LE) + quality(u8) = 12 bytes.
@@ -28,13 +29,15 @@ use rayon::prelude::*;
 ///  15 = YCbCr 4:2:0 + A, aggressive perceptual quant + chroma AC + DC delta
 ///  16 = YCbCr 4:2:0, very aggressive perceptual quant + chroma AC + DC delta
 ///  17 = YCbCr 4:2:0 + A, very aggressive perceptual quant + chroma AC + DC delta
+///  18 = YCbCr 4:2:0, ultra perceptual + AC sparsify + chroma AC + DC delta
+///  19 = YCbCr 4:2:0 + A, ultra perceptual + AC sparsify + chroma AC + DC delta
 pub const BG_HEADER_SIZE: usize = 3 + 4 + 4 + 1;
 
 const BG_MAGIC_GRAY:    &[u8; 3] = b"BG\x01";
 const BG_MAGIC_RGB:     &[u8; 3] = b"BG\x02";
 const BG_MAGIC_RGBA:    &[u8; 3] = b"BG\x03";
-const BG_MAGIC_YUV420_V7:  &[u8; 3] = b"BG\x10";
-const BG_MAGIC_YUV420A_V7: &[u8; 3] = b"BG\x11";
+const BG_MAGIC_YUV420_V8:  &[u8; 3] = b"BG\x12";
+const BG_MAGIC_YUV420A_V8: &[u8; 3] = b"BG\x13";
 
 /// Standard JPEG luminance quantization table (quality ~50).
 pub fn default_quant_table() -> [i16; 64] {
@@ -267,6 +270,43 @@ pub fn chroma_quant_table_for_quality_perceptual_v4(quality: u8) -> [i16; 64] {
 }
 
 #[inline]
+fn sparsify_ac_block(block: &mut Block, quality: u8, is_chroma: bool) {
+    // Extra perceptual squeeze: keep low frequencies, zero tiny AC magnitudes in
+    // medium/high frequencies. This improves entropy coding substantially.
+    let q = quality.clamp(1, 100);
+    let base_t: i16 = if is_chroma {
+        if q >= 90 { 2 } else if q >= 80 { 3 } else { 4 }
+    } else if q >= 90 {
+        1
+    } else if q >= 80 {
+        2
+    } else {
+        3
+    };
+
+    for zi in 1..64 {
+        let z = ZIGZAG[zi];
+        let v = block.data[z];
+        let abs_v = v.abs();
+
+        // Frequency-dependent threshold (more aggressive toward the end).
+        let thr = if zi >= 56 {
+            base_t + 2
+        } else if zi >= 40 {
+            base_t + 1
+        } else if zi >= 24 {
+            base_t
+        } else {
+            base_t.saturating_sub(1).max(1)
+        };
+
+        if abs_v <= thr {
+            block.data[z] = 0;
+        }
+    }
+}
+
+#[inline]
 pub fn quantize(block: &mut [i16; 64], table: &[i16; 64]) {
     unsafe { quantize_block(block.as_mut_ptr(), table.as_ptr()); }
 }
@@ -343,10 +383,15 @@ fn encode_channel_huffman(
     is_chroma: bool,
     use_chroma_ac: bool,
     use_dc_delta: bool,
+    sparsify_ac: bool,
+    quality: u8,
 ) -> Vec<u8> {
     blocks.par_iter_mut().for_each(|block| {
         dct::dct(block);
         quantize(&mut block.data, table);
+        if sparsify_ac {
+            sparsify_ac_block(block, quality, is_chroma);
+        }
         huffman::clamp_block_jpeg_coeffs(block);
     });
     huffman::encode_plane_with_profile(blocks, is_chroma, use_chroma_ac, use_dc_delta)
@@ -358,7 +403,7 @@ pub fn encode_rgb_ycbcr(
     image: &[u8], width: usize, height: usize, quality: u8,
     out: &mut [u8], pos: &mut i32, icc: Option<&[u8]>,
 ) {
-    write_header(out, pos, BG_MAGIC_YUV420_V7, width, height, quality);
+    write_header(out, pos, BG_MAGIC_YUV420_V8, width, height, quality);
 
     let (y, cb, cr) = colorspace::rgb_to_ycbcr420(image, width, height);
     let cw = (width  + 1) / 2;
@@ -375,17 +420,17 @@ pub fn encode_rgb_ycbcr(
     let (y_buf, (cb_buf, cr_buf)) = rayon::join(
         || {
             let mut blocks = blockizer_full.generate_blocks(&y);
-            encode_channel_huffman(&mut blocks, &luma_table, false, false, true)
+            encode_channel_huffman(&mut blocks, &luma_table, false, false, true, true, quality)
         },
         || {
             rayon::join(
                 || {
                     let mut blocks = blockizer_chroma.generate_blocks(&cb);
-                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true)
+                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true, true, quality)
                 },
                 || {
                     let mut blocks = blockizer_chroma.generate_blocks(&cr);
-                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true)
+                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true, true, quality)
                 },
             )
         },
@@ -402,7 +447,7 @@ pub fn encode_rgba_ycbcr(
     image: &[u8], width: usize, height: usize, quality: u8,
     out: &mut [u8], pos: &mut i32, icc: Option<&[u8]>,
 ) {
-    write_header(out, pos, BG_MAGIC_YUV420A_V7, width, height, quality);
+    write_header(out, pos, BG_MAGIC_YUV420A_V8, width, height, quality);
 
     let (y, cb, cr, a) = colorspace::rgba_to_ycbcr420a(image, width, height);
     let cw = (width  + 1) / 2;
@@ -419,11 +464,11 @@ pub fn encode_rgba_ycbcr(
             rayon::join(
                 || {
                     let mut blocks = blockizer_full.generate_blocks(&y);
-                    encode_channel_huffman(&mut blocks, &luma_table, false, false, true)
+                    encode_channel_huffman(&mut blocks, &luma_table, false, false, true, true, quality)
                 },
                 || {
                     let mut blocks = blockizer_full.generate_blocks(&a);
-                    encode_channel_huffman(&mut blocks, &luma_table, false, false, true)
+                    encode_channel_huffman(&mut blocks, &luma_table, false, false, true, true, quality)
                 },
             )
         },
@@ -431,11 +476,11 @@ pub fn encode_rgba_ycbcr(
             rayon::join(
                 || {
                     let mut blocks = blockizer_chroma.generate_blocks(&cb);
-                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true)
+                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true, true, quality)
                 },
                 || {
                     let mut blocks = blockizer_chroma.generate_blocks(&cr);
-                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true)
+                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true, true, quality)
                 },
             )
         },

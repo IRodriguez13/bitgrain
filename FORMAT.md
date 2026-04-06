@@ -24,7 +24,7 @@ Bitgrain is a block-based image codec using 8×8 DCT, quantization, and entropy 
 | 7      | 4    | height   | Image height (uint32 LE) |
 | 11     | 1    | quality  | Quantization quality 1–100; 0 means default 50 |
 
-**Constraints:** width and height must be in [1, 65536]. Current decoders accept versions 1..17.
+**Constraints:** width and height must be in [1, 65536]. Current decoders accept versions 1..19.
 
 Version groups:
 
@@ -38,6 +38,7 @@ Version groups:
 - `v12-v13`: stronger perceptual profile
 - `v14-v15`: aggressive perceptual profile
 - `v16-v17`: very aggressive perceptual profile
+- `v18-v19`: ultra perceptual + AC sparsify profile
 
 ## Block Layout
 

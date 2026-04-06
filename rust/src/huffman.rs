@@ -437,27 +437,42 @@ pub fn encode_plane_with_profile(
         w.write_bits(dc_code, dc_len);
         if dc_cat > 0 { w.write_bits(magnitude_bits(dc_emit, dc_cat), dc_cat); }
 
-        // AC
+        // AC (JPEG-style optimization): stop at last non-zero and emit EOB only when needed.
+        let mut last_nz = 0usize;
+        for i in (1..64).rev() {
+            if block.data[ZIGZAG[i]] != 0 {
+                last_nz = i;
+                break;
+            }
+        }
+        if last_nz == 0 {
+            let (el, ec) = ac_table[0x00];
+            w.write_bits(ec, el);
+            continue;
+        }
+
         let mut zero_run: u8 = 0;
-        for i in 1..64 {
+        for i in 1..=last_nz {
             let val = block.data[ZIGZAG[i]];
             if val == 0 {
                 zero_run += 1;
-                if zero_run == 16 {
-                    let (zl, zc) = ac_table[0xF0]; w.write_bits(zc, zl);
-                    zero_run = 0;
-                }
-            } else {
-                let cat = category(val);
-                let sym = (zero_run << 4) | cat;
-                let (al, ac) = ac_table[sym as usize];
-                assert!(al > 0, "missing AC Huffman for RS {sym:#04x} (run={zero_run} cat={cat})");
-                w.write_bits(ac, al);
-                w.write_bits(magnitude_bits(val, cat), cat);
-                zero_run = 0;
+                continue;
             }
+            while zero_run >= 16 {
+                let (zl, zc) = ac_table[0xF0];
+                w.write_bits(zc, zl);
+                zero_run -= 16;
+            }
+            let cat = category(val);
+            let sym = (zero_run << 4) | cat;
+            let (al, ac) = ac_table[sym as usize];
+            assert!(al > 0, "missing AC Huffman for RS {sym:#04x} (run={zero_run} cat={cat})");
+            w.write_bits(ac, al);
+            w.write_bits(magnitude_bits(val, cat), cat);
+            zero_run = 0;
         }
-        let (el, ec) = ac_table[0x00]; w.write_bits(ec, el);
+        let (el, ec) = ac_table[0x00];
+        w.write_bits(ec, el);
     }
     w.flush();
 

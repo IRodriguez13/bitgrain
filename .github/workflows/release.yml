@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure tag commit is on master
+        run: |
+          git fetch origin master --depth=1
+          if ! git branch -r --contains "$GITHUB_SHA" | grep -q "origin/master"; then
+            echo "Tag $GITHUB_REF_NAME is not on master"
+            exit 1
+          fi
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libwebp-dev libpng-dev
+
+      - name: Build release artifacts
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/rust/target
+          RUSTFLAGS: -C target-cpu=native
+        run: |
+          make bitgrain
+          ARCHIVE="bitgrain-${GITHUB_REF_NAME}-linux-x86_64.tar.gz"
+          mkdir -p dist
+          cp bitgrain dist/
+          cp README.md LICENSE dist/
+          cp man/bitgrain.1 dist/
+          cp completions/bitgrain.bash dist/
+          mkdir -p dist/include/bitgrain
+          cp includes/encoder.h dist/include/bitgrain/
+          tar -C dist -czf "$ARCHIVE" .
+          sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bitgrain-v*-linux-x86_64.tar.gz
+            bitgrain-v*-linux-x86_64.tar.gz.sha256
+          generate_release_notes: true
