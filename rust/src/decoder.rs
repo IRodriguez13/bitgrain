@@ -24,9 +24,11 @@ use crate::block::Block;
 use crate::colorspace;
 use crate::dct;
 use crate::encoder;
+use crate::ffi::dequantize_block;
 use crate::huffman;
 use crate::zigzag::ZIGZAG;
 use rayon::prelude::*;
+const BLOCK_TILE_SIZE: usize = 256;
 
 const HEADER_SIZE:     usize = 3 + 4 + 4 + 1;
 const HEADER_SIZE_OLD: usize = 3 + 4 + 4;
@@ -79,9 +81,11 @@ fn decode_plane_rle(
 
     let (mut blocks, new_pos) = decode_rle_to_blocks(buffer, pos, n)?;
 
-    blocks.par_iter_mut().for_each(|block| {
-        for i in 0..64 { block.data[i] = block.data[i].saturating_mul(quant[i]); }
-        dct::idct(block);
+    blocks.par_chunks_mut(BLOCK_TILE_SIZE).for_each(|chunk| {
+        for block in chunk.iter_mut() {
+            unsafe { dequantize_block(block.data.as_mut_ptr(), quant.as_ptr()); }
+            dct::idct(block);
+        }
     });
 
     for (idx, block) in blocks.iter().enumerate() {
@@ -122,9 +126,11 @@ fn decode_plane_huffman(
         huffman::decode_plane_with_profile(buffer, pos, n, is_chroma, use_chroma_ac, use_dc_delta)?;
 
     // Parallel dequant + IDCT
-    blocks.par_iter_mut().for_each(|block| {
-        for i in 0..64 { block.data[i] = block.data[i].saturating_mul(quant[i]); }
-        dct::idct(block);
+    blocks.par_chunks_mut(BLOCK_TILE_SIZE).for_each(|chunk| {
+        for block in chunk.iter_mut() {
+            unsafe { dequantize_block(block.data.as_mut_ptr(), quant.as_ptr()); }
+            dct::idct(block);
+        }
     });
 
     // Write to flat plane

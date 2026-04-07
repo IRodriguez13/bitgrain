@@ -52,7 +52,7 @@ type AcTable = [(u8, u16); 256];
 
 use crate::jpeg_luma_ac_ht::JPEG_LUMA_AC_HT;
 use std::sync::OnceLock;
-const FAST_BITS: u8 = 10;
+const FAST_BITS: u8 = 12;
 type FastEntry = (i16, u8); // (sym, bits_len), sym<0 means miss
 
 /// stb_image_write / ISO 10918-1 Annex K luminance AC Huffman (full 256-entry encode table).

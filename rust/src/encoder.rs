@@ -8,6 +8,7 @@ use crate::ffi::quantize_block;
 use crate::huffman;
 use crate::zigzag::ZIGZAG;
 use rayon::prelude::*;
+const BLOCK_TILE_SIZE: usize = 256;
 
 /// .bg header: "BG" + version + width(u32 LE) + height(u32 LE) + quality(u8) = 12 bytes.
 ///
@@ -337,9 +338,11 @@ fn write_icc_trailer(out: &mut [u8], pos: &mut i32, icc: Option<&[u8]>) {
 // ---------------------------------------------------------------------------
 
 fn encode_blocks_rle(blocks: &mut [Block], table: &[i16; 64], out: &mut [u8], pos: &mut i32) {
-    blocks.par_iter_mut().for_each(|block| {
-        dct::dct(block);
-        quantize(&mut block.data, table);
+    blocks.par_chunks_mut(BLOCK_TILE_SIZE).for_each(|chunk| {
+        for block in chunk.iter_mut() {
+            dct::dct(block);
+            quantize(&mut block.data, table);
+        }
     });
     for block in blocks.iter() {
         entropy::encode_block_to_buffer(block, out, pos);
@@ -347,9 +350,11 @@ fn encode_blocks_rle(blocks: &mut [Block], table: &[i16; 64], out: &mut [u8], po
 }
 
 fn encode_channel_rle(blocks: &mut [Block], table: &[i16; 64]) -> Vec<u8> {
-    blocks.par_iter_mut().for_each(|block| {
-        dct::dct(block);
-        quantize(&mut block.data, table);
+    blocks.par_chunks_mut(BLOCK_TILE_SIZE).for_each(|chunk| {
+        for block in chunk.iter_mut() {
+            dct::dct(block);
+            quantize(&mut block.data, table);
+        }
     });
     let cap = blocks.len() * (2 + 63 * 3 + 3);
     let mut buf = vec![0u8; cap];
@@ -385,13 +390,15 @@ fn encode_channel_huffman(
     use_dc_delta: bool,
     sparsify_thresholds: Option<&[i16; 64]>,
 ) -> Vec<u8> {
-    blocks.par_iter_mut().for_each(|block| {
-        dct::dct(block);
-        quantize(&mut block.data, table);
-        if let Some(thr) = sparsify_thresholds {
-            sparsify_ac_block(block, thr);
+    blocks.par_chunks_mut(BLOCK_TILE_SIZE).for_each(|chunk| {
+        for block in chunk.iter_mut() {
+            dct::dct(block);
+            quantize(&mut block.data, table);
+            if let Some(thr) = sparsify_thresholds {
+                sparsify_ac_block(block, thr);
+            }
+            huffman::clamp_block_jpeg_coeffs(block);
         }
-        huffman::clamp_block_jpeg_coeffs(block);
     });
     huffman::encode_plane_with_profile(blocks, is_chroma, use_chroma_ac, use_dc_delta)
 }

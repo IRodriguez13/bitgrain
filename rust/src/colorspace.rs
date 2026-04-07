@@ -626,6 +626,10 @@ pub fn ycbcr420_to_rgb(y: &[u8], cb: &[u8], cr: &[u8], w: usize, _h: usize, out:
     let cw = (w + 1) / 2;
     let h = y.len() / w;
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    let use_avx512 = is_x86_feature_detected!("avx512f");
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    let use_avx512 = false;
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     let use_avx2 = is_x86_feature_detected!("avx2");
     #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     let use_avx2 = false;
@@ -639,7 +643,7 @@ pub fn ycbcr420_to_rgb(y: &[u8], cb: &[u8], cr: &[u8], w: usize, _h: usize, out:
         let y_slice = &y[y_row..y_row + w];
         let cb_slice = &cb[c_row..c_row + cw];
         let cr_slice = &cr[c_row..c_row + cw];
-        if use_avx2 {
+        if use_avx512 || use_avx2 {
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             unsafe {
                 ycbcr420_to_rgb_row_avx2(y_slice, cb_slice, cr_slice, w, out_row);
@@ -674,6 +678,10 @@ pub fn ycbcr420a_to_rgba(y: &[u8], cb: &[u8], cr: &[u8], a: &[u8], w: usize, _h:
     let cw = (w + 1) / 2;
     let h = y.len() / w;
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    let use_avx512 = is_x86_feature_detected!("avx512f");
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    let use_avx512 = false;
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     let use_avx2 = is_x86_feature_detected!("avx2");
     #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     let use_avx2 = false;
@@ -688,7 +696,7 @@ pub fn ycbcr420a_to_rgba(y: &[u8], cb: &[u8], cr: &[u8], a: &[u8], w: usize, _h:
         let cb_slice = &cb[c_row..c_row + cw];
         let cr_slice = &cr[c_row..c_row + cw];
         let a_slice = &a[y_row..y_row + w];
-        if use_avx2 {
+        if use_avx512 || use_avx2 {
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             unsafe {
                 ycbcr420a_to_rgba_row_avx2(y_slice, cb_slice, cr_slice, a_slice, w, out_row);

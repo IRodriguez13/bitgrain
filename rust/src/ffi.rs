@@ -9,6 +9,10 @@ extern "C" {
         block: *mut i16,
         table: *const i16,
     );
+    pub fn dequantize_block(
+        block: *mut i16,
+        table: *const i16,
+    );
     pub fn bitgrain_dct_block(block: *mut i16);
     pub fn bitgrain_idct_block(block: *mut i16);
 }

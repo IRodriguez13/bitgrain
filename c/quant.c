@@ -2,6 +2,16 @@
 #include "quant.h"
 #include <stdint.h>
 
+static inline void dequantize_block_scalar_impl(int16_t *block, const int16_t *table)
+{
+    for (int i = 0; i < 64; i++) {
+        int v = (int)block[i] * (int)table[i];
+        if (v > 32767) v = 32767;
+        if (v < -32768) v = -32768;
+        block[i] = (int16_t)v;
+    }
+}
+
 #if defined(__AVX2__)
 #include <immintrin.h>
 
@@ -38,6 +48,44 @@ void quantize_block(int16_t *block, const int16_t *table)
     quantize_block_avx2(block, table);
 }
 
+static void dequantize_block_avx2(int16_t *block, const int16_t *table)
+{
+    const __m256i vmin = _mm256_set1_epi32(-32768);
+    const __m256i vmax = _mm256_set1_epi32(32767);
+    for (int i = 0; i < 64; i += 16) {
+        __m256i b = _mm256_loadu_si256((const __m256i *)&block[i]);
+        __m256i t = _mm256_loadu_si256((const __m256i *)&table[i]);
+
+        __m256i bl = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(b));
+        __m256i tl = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(t));
+        __m256i rl = _mm256_mullo_epi32(bl, tl);
+        rl = _mm256_min_epi32(vmax, _mm256_max_epi32(vmin, rl));
+
+        __m256i bh = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(b, 1));
+        __m256i th = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(t, 1));
+        __m256i rh = _mm256_mullo_epi32(bh, th);
+        rh = _mm256_min_epi32(vmax, _mm256_max_epi32(vmin, rh));
+
+        __m128i rl_lo = _mm256_castsi256_si128(rl);
+        __m128i rl_hi = _mm256_extracti128_si256(rl, 1);
+        __m128i rh_lo = _mm256_castsi256_si128(rh);
+        __m128i rh_hi = _mm256_extracti128_si256(rh, 1);
+        __m128i out_lo = _mm_packs_epi32(rl_lo, rl_hi);
+        __m128i out_hi = _mm_packs_epi32(rh_lo, rh_hi);
+        _mm_storeu_si128((__m128i *)&block[i], out_lo);
+        _mm_storeu_si128((__m128i *)&block[i + 8], out_hi);
+    }
+}
+
+void dequantize_block(int16_t *block, const int16_t *table)
+{
+#ifdef BITGRAIN_DEQUANT_SCALAR_ONLY
+    dequantize_block_scalar_impl(block, table);
+#else
+    dequantize_block_avx2(block, table);
+#endif
+}
+
 #elif defined(__SSE2__)
 #include <emmintrin.h>
 
@@ -70,6 +118,11 @@ void quantize_block(int16_t *block, const int16_t *table)
     quantize_block_sse2(block, table);
 }
 
+void dequantize_block(int16_t *block, const int16_t *table)
+{
+    dequantize_block_scalar_impl(block, table);
+}
+
 #elif defined(__ARM_NEON) || defined(__aarch64__)
 #include <arm_neon.h>
 
@@ -91,6 +144,30 @@ void quantize_block(int16_t *block, const int16_t *table)
     quantize_block_neon(block, table);
 }
 
+void dequantize_block(int16_t *block, const int16_t *table)
+{
+#ifdef BITGRAIN_DEQUANT_SCALAR_ONLY
+    dequantize_block_scalar_impl(block, table);
+#else
+    const int32x4_t vmin = vdupq_n_s32(-32768);
+    const int32x4_t vmax = vdupq_n_s32(32767);
+    for (int i = 0; i < 64; i += 8) {
+        int16x8_t b = vld1q_s16(&block[i]);
+        int16x8_t t = vld1q_s16(&table[i]);
+        int16x4_t b0 = vget_low_s16(b), b1 = vget_high_s16(b);
+        int16x4_t t0 = vget_low_s16(t), t1 = vget_high_s16(t);
+
+        int32x4_t r0 = vmulq_s32(vmovl_s16(b0), vmovl_s16(t0));
+        int32x4_t r1 = vmulq_s32(vmovl_s16(b1), vmovl_s16(t1));
+        r0 = vmaxq_s32(vmin, vminq_s32(vmax, r0));
+        r1 = vmaxq_s32(vmin, vminq_s32(vmax, r1));
+
+        int16x8_t out = vcombine_s16(vqmovn_s32(r0), vqmovn_s32(r1));
+        vst1q_s16(&block[i], out);
+    }
+#endif
+}
+
 #else
 
 /* Scalar fallback — compiled only when no SIMD is available. */
@@ -98,6 +175,11 @@ void quantize_block(int16_t *block, const int16_t *table)
 {
     for (int i = 0; i < 64; i++)
         block[i] = block[i] / table[i];
+}
+
+void dequantize_block(int16_t *block, const int16_t *table)
+{
+    dequantize_block_scalar_impl(block, table);
 }
 
 #endif
