@@ -52,6 +52,8 @@ type AcTable = [(u8, u16); 256];
 
 use crate::jpeg_luma_ac_ht::JPEG_LUMA_AC_HT;
 use std::sync::OnceLock;
+const FAST_BITS: u8 = 10;
+type FastEntry = (i16, u8); // (sym, bits_len), sym<0 means miss
 
 /// stb_image_write / ISO 10918-1 Annex K luminance AC Huffman (full 256-entry encode table).
 fn ac_table_from_stb_ht(ht: &[[u16; 2]; 256]) -> AcTable {
@@ -139,11 +141,15 @@ impl DecodeNode {
 
 struct DecodeTree {
     nodes: Vec<DecodeNode>,
+    fast: [FastEntry; 1 << FAST_BITS],
 }
 
 impl DecodeTree {
     fn with_root() -> Self {
-        Self { nodes: vec![DecodeNode::new()] }
+        Self {
+            nodes: vec![DecodeNode::new()],
+            fast: [(-1, 0); 1 << FAST_BITS],
+        }
     }
 
     fn insert(&mut self, code: u16, len: u8, sym: u8) -> bool {
@@ -173,6 +179,16 @@ impl DecodeTree {
             return false;
         }
         self.nodes[idx].sym = sym as i16;
+
+        // Build a small prefix LUT for fast symbol decode.
+        if len <= FAST_BITS {
+            let shift = (FAST_BITS - len) as usize;
+            let base = (code as usize) << shift;
+            let reps = 1usize << shift;
+            for i in 0..reps {
+                self.fast[base + i] = (sym as i16, len);
+            }
+        }
         true
     }
 }
@@ -336,13 +352,49 @@ impl<'a> BitReader<'a> {
     }
 
     #[inline]
+    fn ensure_bits(&mut self, n: u8) -> bool {
+        if self.bits_in < n {
+            self.refill();
+        }
+        self.bits_in >= n
+    }
+
+    #[inline]
+    pub fn peek_bits(&mut self, n: u8) -> Option<u16> {
+        if n == 0 {
+            return Some(0);
+        }
+        if !self.ensure_bits(n) {
+            return None;
+        }
+        let shift = self.bits_in - n;
+        Some(((self.bit_buf >> shift) & ((1u64 << n) - 1)) as u16)
+    }
+
+    #[inline]
+    pub fn drop_bits(&mut self, n: u8) -> bool {
+        if n == 0 {
+            return true;
+        }
+        if !self.ensure_bits(n) {
+            return false;
+        }
+        self.bits_in -= n;
+        if self.bits_in == 0 {
+            self.bit_buf = 0;
+        } else {
+            self.bit_buf &= (1u64 << self.bits_in) - 1;
+        }
+        true
+    }
+
+    #[inline]
     pub fn read_bits(&mut self, n: u8) -> Option<u16> {
         if n == 0 { return Some(0); }
         if n == 1 {
             return self.read_one_bit().map(|b| b as u16);
         }
-        self.refill();
-        if self.bits_in < n {
+        if !self.ensure_bits(n) {
             return None;
         }
         let shift = self.bits_in - n;
@@ -380,6 +432,21 @@ impl<'a> BitReader<'a> {
 // ---------------------------------------------------------------------------
 
 fn decode_sym(reader: &mut BitReader, tree: &DecodeTree) -> Option<u8> {
+    if reader.ensure_bits(FAST_BITS) {
+        let shift = reader.bits_in - FAST_BITS;
+        let prefix = ((reader.bit_buf >> shift) & ((1u64 << FAST_BITS) - 1)) as usize;
+        let (sym, len) = tree.fast[prefix as usize];
+        if sym >= 0 {
+            reader.bits_in -= len;
+            if reader.bits_in == 0 {
+                reader.bit_buf = 0;
+            } else {
+                reader.bit_buf &= (1u64 << reader.bits_in) - 1;
+            }
+            return Some(sym as u8);
+        }
+    }
+
     let mut idx = 0usize;
     for _ in 0..16 {
         let bit = reader.read_one_bit()? as usize;

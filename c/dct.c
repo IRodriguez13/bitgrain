@@ -27,10 +27,88 @@ static const float COS_TABLE[8][8] = {
 #define INV_SQRT2 0.70710678118654752440f
 
 /* ------------------------------------------------------------------ */
+/* AVX2 implementation                                                  */
+/* ------------------------------------------------------------------ */
+#if defined(__AVX2__)
+#include <immintrin.h>
+
+static inline float hsum_ps_avx(__m256 v)
+{
+    __m128 lo = _mm256_castps256_ps128(v);
+    __m128 hi = _mm256_extractf128_ps(v, 1);
+    __m128 s = _mm_add_ps(lo, hi);
+    __m128 t = _mm_add_ps(s, _mm_movehl_ps(s, s));
+    t = _mm_add_ss(t, _mm_shuffle_ps(t, t, 0x55));
+    return _mm_cvtss_f32(t);
+}
+
+static void dct_1d_avx2(const float *in, float *out)
+{
+    __m256 vin = _mm256_loadu_ps(in);
+    for (int u = 0; u < 8; u++) {
+        __m256 vc = _mm256_loadu_ps(&COS_TABLE[u][0]);
+        float total = hsum_ps_avx(_mm256_mul_ps(vin, vc));
+        out[u] = ((u == 0) ? 0.5f * INV_SQRT2 : 0.5f) * total;
+    }
+}
+
+static void idct_1d_avx2(const float *in, float *out)
+{
+    float sc[8];
+    sc[0] = INV_SQRT2 * in[0];
+    for (int u = 1; u < 8; u++) sc[u] = in[u];
+    __m256 vin = _mm256_loadu_ps(sc);
+    for (int x = 0; x < 8; x++) {
+        __m256 vc = _mm256_setr_ps(
+            COS_TABLE[0][x], COS_TABLE[1][x], COS_TABLE[2][x], COS_TABLE[3][x],
+            COS_TABLE[4][x], COS_TABLE[5][x], COS_TABLE[6][x], COS_TABLE[7][x]
+        );
+        out[x] = 0.5f * hsum_ps_avx(_mm256_mul_ps(vin, vc));
+    }
+}
+
+static void dct_block_avx2(int16_t *block)
+{
+    float tmp[64], row[8], col[8];
+    for (int y = 0; y < 8; y++) {
+        for (int x = 0; x < 8; x++) row[x] = (float)block[y * 8 + x];
+        dct_1d_avx2(row, col);
+        for (int u = 0; u < 8; u++) tmp[y * 8 + u] = col[u];
+    }
+    for (int u = 0; u < 8; u++) {
+        for (int v = 0; v < 8; v++) col[v] = tmp[v * 8 + u];
+        dct_1d_avx2(col, row);
+        for (int v = 0; v < 8; v++) block[v * 8 + u] = (int16_t)lroundf(row[v]);
+    }
+}
+
+static void idct_block_avx2(int16_t *block)
+{
+    float tmp[64], row[8], col[8];
+    for (int u = 0; u < 8; u++) {
+        for (int v = 0; v < 8; v++) col[v] = (float)block[v * 8 + u];
+        idct_1d_avx2(col, row);
+        for (int v = 0; v < 8; v++) tmp[v * 8 + u] = row[v];
+    }
+    for (int y = 0; y < 8; y++) {
+        for (int x = 0; x < 8; x++) row[x] = tmp[y * 8 + x];
+        idct_1d_avx2(row, col);
+        for (int x = 0; x < 8; x++) block[y * 8 + x] = (int16_t)lroundf(col[x]);
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* SSE2 implementation                                                  */
 /* ------------------------------------------------------------------ */
-#if defined(__SSE2__)
+#elif defined(__SSE2__)
 #include <emmintrin.h>
+
+static inline float hsum_ps_sse2(__m128 v)
+{
+    __m128 t = _mm_add_ps(v, _mm_movehl_ps(v, v));
+    t = _mm_add_ss(t, _mm_shuffle_ps(t, t, 0x55));
+    return _mm_cvtss_f32(t);
+}
 
 static void dct_1d_sse2(const float *in, float *out)
 {
@@ -41,30 +119,23 @@ static void dct_1d_sse2(const float *in, float *out)
             __m128 b = _mm_loadu_ps(&COS_TABLE[u][x]);
             sum = _mm_add_ps(sum, _mm_mul_ps(a, b));
         }
-        float s[4];
-        _mm_storeu_ps(s, sum);
-        float total = s[0] + s[1] + s[2] + s[3];
+        float total = hsum_ps_sse2(sum);
         out[u] = ((u == 0) ? 0.5f * INV_SQRT2 : 0.5f) * total;
     }
 }
 
 static void idct_1d_sse2(const float *in, float *out)
 {
+    const float sc0 = INV_SQRT2 * in[0];
+    __m128 in0 = _mm_setr_ps(sc0, in[1], in[2], in[3]);
+    __m128 in1 = _mm_setr_ps(in[4], in[5], in[6], in[7]);
     for (int x = 0; x < 8; x++) {
         __m128 sum = _mm_setzero_ps();
-        for (int u = 0; u < 8; u += 4) {
-            __m128 a = _mm_setr_ps(
-                (u   == 0 ? INV_SQRT2 : 1.f) * in[u],
-                (u+1 == 0 ? INV_SQRT2 : 1.f) * in[u+1],
-                (u+2 == 0 ? INV_SQRT2 : 1.f) * in[u+2],
-                (u+3 == 0 ? INV_SQRT2 : 1.f) * in[u+3]);
-            __m128 b = _mm_setr_ps(COS_TABLE[u][x],   COS_TABLE[u+1][x],
-                                   COS_TABLE[u+2][x], COS_TABLE[u+3][x]);
-            sum = _mm_add_ps(sum, _mm_mul_ps(a, b));
-        }
-        float s[4];
-        _mm_storeu_ps(s, sum);
-        out[x] = 0.5f * (s[0] + s[1] + s[2] + s[3]);
+        __m128 c0 = _mm_setr_ps(COS_TABLE[0][x], COS_TABLE[1][x], COS_TABLE[2][x], COS_TABLE[3][x]);
+        __m128 c1 = _mm_setr_ps(COS_TABLE[4][x], COS_TABLE[5][x], COS_TABLE[6][x], COS_TABLE[7][x]);
+        sum = _mm_add_ps(sum, _mm_mul_ps(in0, c0));
+        sum = _mm_add_ps(sum, _mm_mul_ps(in1, c1));
+        out[x] = 0.5f * hsum_ps_sse2(sum);
     }
 }
 
@@ -226,6 +297,8 @@ void bitgrain_dct_block(int16_t *block)
 {
 #if defined(__ARM_NEON) || defined(__aarch64__)
     dct_block_neon(block);
+#elif defined(__AVX2__)
+    dct_block_avx2(block);
 #elif defined(__SSE2__)
     dct_block_sse2(block);
 #else
@@ -237,6 +310,8 @@ void bitgrain_idct_block(int16_t *block)
 {
 #if defined(__ARM_NEON) || defined(__aarch64__)
     idct_block_neon(block);
+#elif defined(__AVX2__)
+    idct_block_avx2(block);
 #elif defined(__SSE2__)
     idct_block_sse2(block);
 #else

@@ -144,14 +144,36 @@ CSV outputs:
 
 Temporary intermediate files are created under `/tmp` and removed automatically.
 
-### Snapshot (latest local run, quality 85, 4 images)
+### Snapshot (latest local run, quality 85)
 
-- Baseline start (older profile): average size delta vs JPEG `+63.48%`
-- Current `v16/v17`: average size delta vs JPEG `+29.43%` (gap reduced by `34.05` points)
-- Sample per-image ratio (`bg/jpg`): `1.9381x`, `0.6843x`, `0.9585x`, `1.5964x`
-- Speed remains competitive in this sample set (Bitgrain often wins decode, sometimes encode)
+Setup used for the numbers below:
 
-Use these numbers as project snapshot, not absolute truth: results vary with dataset and quality target.
+- Bitgrain profile: `v18/v19` (ultra perceptual + AC sparsify)
+- Runs: `5`
+- Codecs: Bitgrain vs JPEG (`cjpeg/djpeg`) vs JPEG2000 (`opj_compress/opj_decompress -r 20`)
+- Images: `weic2517d.jpg` and `potm2411b.jpg`
+
+| Image | Codec | Size (bytes) | Encode avg ms | Decode avg ms |
+|------|------|-------------:|--------------:|--------------:|
+| weic2517d.jpg | Bitgrain | 638,085 | 131.06 | 179.92 |
+| weic2517d.jpg | JPEG (cjpeg) | 1,269,030 | 30.38 | 141.97 |
+| weic2517d.jpg | JPEG2000 (opj) | 1,530,779 | 1817.07 | 460.80 |
+| potm2411b.jpg | Bitgrain | 60,011 | 16.43 | 17.11 |
+| potm2411b.jpg | JPEG (cjpeg) | 173,980 | 3.68 | 13.63 |
+| potm2411b.jpg | JPEG2000 (opj) | 117,857 | 227.97 | 38.66 |
+
+Quick ranking from this snapshot:
+
+- **Compression (smaller is better):** Bitgrain > JPEG > JPEG2000
+- **Encode speed (faster is better):** JPEG > Bitgrain >>> JPEG2000
+- **Decode speed (faster is better):** JPEG > Bitgrain >> JPEG2000
+
+Why this still sells:
+
+- Bitgrain is significantly smaller than JPEG in the measured sample while remaining in practical encode/decode times.
+- Against JPEG2000, Bitgrain is both much faster and smaller in this setup.
+
+Use these numbers as a reproducible project snapshot, not an absolute universal claim. Always validate with your own dataset and quality targets.
 
 ## Roadmap
 

@@ -269,10 +269,8 @@ pub fn chroma_quant_table_for_quality_perceptual_v4(quality: u8) -> [i16; 64] {
     scale_quant_table_perceptual_v4(&default_chroma_quant_table(), quality, true)
 }
 
-#[inline]
-fn sparsify_ac_block(block: &mut Block, quality: u8, is_chroma: bool) {
-    // Extra perceptual squeeze: keep low frequencies, zero tiny AC magnitudes in
-    // medium/high frequencies. This improves entropy coding substantially.
+fn build_sparsify_thresholds(quality: u8, is_chroma: bool) -> [i16; 64] {
+    // Precompute once per plane to avoid per-block branchy threshold math.
     let q = quality.clamp(1, 100);
     let base_t: i16 = if is_chroma {
         if q >= 90 { 2 } else if q >= 80 { 3 } else { 4 }
@@ -283,14 +281,9 @@ fn sparsify_ac_block(block: &mut Block, quality: u8, is_chroma: bool) {
     } else {
         3
     };
-
+    let mut thr = [0i16; 64];
     for zi in 1..64 {
-        let z = ZIGZAG[zi];
-        let v = block.data[z];
-        let abs_v = v.abs();
-
-        // Frequency-dependent threshold (more aggressive toward the end).
-        let thr = if zi >= 56 {
+        thr[zi] = if zi >= 56 {
             base_t + 2
         } else if zi >= 40 {
             base_t + 1
@@ -299,8 +292,15 @@ fn sparsify_ac_block(block: &mut Block, quality: u8, is_chroma: bool) {
         } else {
             base_t.saturating_sub(1).max(1)
         };
+    }
+    thr
+}
 
-        if abs_v <= thr {
+#[inline]
+fn sparsify_ac_block(block: &mut Block, thresholds: &[i16; 64]) {
+    for zi in 1..64 {
+        let z = ZIGZAG[zi];
+        if block.data[z].abs() <= thresholds[zi] {
             block.data[z] = 0;
         }
     }
@@ -383,14 +383,13 @@ fn encode_channel_huffman(
     is_chroma: bool,
     use_chroma_ac: bool,
     use_dc_delta: bool,
-    sparsify_ac: bool,
-    quality: u8,
+    sparsify_thresholds: Option<&[i16; 64]>,
 ) -> Vec<u8> {
     blocks.par_iter_mut().for_each(|block| {
         dct::dct(block);
         quantize(&mut block.data, table);
-        if sparsify_ac {
-            sparsify_ac_block(block, quality, is_chroma);
+        if let Some(thr) = sparsify_thresholds {
+            sparsify_ac_block(block, thr);
         }
         huffman::clamp_block_jpeg_coeffs(block);
     });
@@ -411,6 +410,8 @@ pub fn encode_rgb_ycbcr(
 
     let luma_table   = quant_table_for_quality_perceptual_v4(quality);
     let chroma_table = chroma_quant_table_for_quality_perceptual_v4(quality);
+    let luma_sparsify = build_sparsify_thresholds(quality, false);
+    let chroma_sparsify = build_sparsify_thresholds(quality, true);
 
     // Encode Y, Cb, Cr in parallel — each into its own buffer
     let blockizer_full   = Blockizer::new(width, height);
@@ -420,17 +421,17 @@ pub fn encode_rgb_ycbcr(
     let (y_buf, (cb_buf, cr_buf)) = rayon::join(
         || {
             let mut blocks = blockizer_full.generate_blocks(&y);
-            encode_channel_huffman(&mut blocks, &luma_table, false, false, true, true, quality)
+            encode_channel_huffman(&mut blocks, &luma_table, false, false, true, Some(&luma_sparsify))
         },
         || {
             rayon::join(
                 || {
                     let mut blocks = blockizer_chroma.generate_blocks(&cb);
-                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true, true, quality)
+                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true, Some(&chroma_sparsify))
                 },
                 || {
                     let mut blocks = blockizer_chroma.generate_blocks(&cr);
-                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true, true, quality)
+                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true, Some(&chroma_sparsify))
                 },
             )
         },
@@ -455,6 +456,8 @@ pub fn encode_rgba_ycbcr(
 
     let luma_table   = quant_table_for_quality_perceptual_v4(quality);
     let chroma_table = chroma_quant_table_for_quality_perceptual_v4(quality);
+    let luma_sparsify = build_sparsify_thresholds(quality, false);
+    let chroma_sparsify = build_sparsify_thresholds(quality, true);
 
     let blockizer_full   = Blockizer::new(width, height);
     let blockizer_chroma = Blockizer::new(cw, ch);
@@ -464,11 +467,11 @@ pub fn encode_rgba_ycbcr(
             rayon::join(
                 || {
                     let mut blocks = blockizer_full.generate_blocks(&y);
-                    encode_channel_huffman(&mut blocks, &luma_table, false, false, true, true, quality)
+                    encode_channel_huffman(&mut blocks, &luma_table, false, false, true, Some(&luma_sparsify))
                 },
                 || {
                     let mut blocks = blockizer_full.generate_blocks(&a);
-                    encode_channel_huffman(&mut blocks, &luma_table, false, false, true, true, quality)
+                    encode_channel_huffman(&mut blocks, &luma_table, false, false, true, Some(&luma_sparsify))
                 },
             )
         },
@@ -476,11 +479,11 @@ pub fn encode_rgba_ycbcr(
             rayon::join(
                 || {
                     let mut blocks = blockizer_chroma.generate_blocks(&cb);
-                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true, true, quality)
+                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true, Some(&chroma_sparsify))
                 },
                 || {
                     let mut blocks = blockizer_chroma.generate_blocks(&cr);
-                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true, true, quality)
+                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true, Some(&chroma_sparsify))
                 },
             )
         },

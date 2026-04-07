@@ -69,7 +69,9 @@ int main(int argc, char **argv)
         printf("bitgrain %s\n", BITGRAIN_VERSION);
         printf("Author: Iván E. Rodriguez\n");
         printf("Email: ivanrwcm25@gmail.com\n");
-        printf("License: GPLv3\n");
+        printf("License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>\n");
+        printf("This is free software: you are free to redistribute it and/or modify it.\n");
+        printf("There is NO WARRANTY, to the extent permitted by applicable law.\n");
         printf("Upstream: https://github.com/IRodriguez13/bitgrain\n");
         return 0;
     }

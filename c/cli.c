@@ -206,6 +206,9 @@ int cli_parse_subcommand(int argc, char **argv, cli_ctx_t *ctx, const char *subc
         }
         if (strcmp(a, "--version") == 0 || strcmp(a, "-v") == 0) {
             printf("bitgrain %s\n", BITGRAIN_VERSION);
+            printf("License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>\n");
+            printf("This is free software: you are free to redistribute it and/or modify it.\n");
+            printf("There is NO WARRANTY, to the extent permitted by applicable law.\n");
             printf("Email: ivanrwcm25@gmail.com\n");
             path_list_free(&input_specs);
             return -2;
@@ -358,7 +361,9 @@ int cli_parse(int argc, char **argv, cli_ctx_t *ctx)
             printf("bitgrain %s\n", BITGRAIN_VERSION);
             printf("Author: Iván E. Rodriguez\n");
             printf("Email: ivanrwcm25@gmail.com\n");
-            printf("License: GPLv3\n");
+            printf("License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>\n");
+            printf("This is free software: you are free to redistribute it and/or modify it.\n");
+            printf("There is NO WARRANTY, to the extent permitted by applicable law.\n");
             printf("Upstream: https://github.com/IRodriguez13/bitgrain\n");
             return -2;
         case 'h':
