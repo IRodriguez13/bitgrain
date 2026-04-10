@@ -26,6 +26,14 @@ static const float COS_TABLE[8][8] = {
 
 #define INV_SQRT2 0.70710678118654752440f
 
+static inline int16_t dct_round_i16(float v)
+{
+    long r = lrintf(v);
+    if (r > 32767) r = 32767;
+    if (r < -32768) r = -32768;
+    return (int16_t)r;
+}
+
 /* ------------------------------------------------------------------ */
 /* AVX2 implementation                                                  */
 /* ------------------------------------------------------------------ */
@@ -78,7 +86,7 @@ static void dct_block_avx2(int16_t *block)
     for (int u = 0; u < 8; u++) {
         for (int v = 0; v < 8; v++) col[v] = tmp[v * 8 + u];
         dct_1d_avx2(col, row);
-        for (int v = 0; v < 8; v++) block[v * 8 + u] = (int16_t)lroundf(row[v]);
+        for (int v = 0; v < 8; v++) block[v * 8 + u] = dct_round_i16(row[v]);
     }
 }
 
@@ -93,7 +101,7 @@ static void idct_block_avx2(int16_t *block)
     for (int y = 0; y < 8; y++) {
         for (int x = 0; x < 8; x++) row[x] = tmp[y * 8 + x];
         idct_1d_avx2(row, col);
-        for (int x = 0; x < 8; x++) block[y * 8 + x] = (int16_t)lroundf(col[x]);
+        for (int x = 0; x < 8; x++) block[y * 8 + x] = dct_round_i16(col[x]);
     }
 }
 
@@ -150,7 +158,7 @@ static void dct_block_sse2(int16_t *block)
     for (int u = 0; u < 8; u++) {
         for (int v = 0; v < 8; v++) col[v] = tmp[v * 8 + u];
         dct_1d_sse2(col, row);
-        for (int v = 0; v < 8; v++) block[v * 8 + u] = (int16_t)lroundf(row[v]);
+        for (int v = 0; v < 8; v++) block[v * 8 + u] = dct_round_i16(row[v]);
     }
 }
 
@@ -165,7 +173,7 @@ static void idct_block_sse2(int16_t *block)
     for (int y = 0; y < 8; y++) {
         for (int x = 0; x < 8; x++) row[x] = tmp[y * 8 + x];
         idct_1d_sse2(row, col);
-        for (int x = 0; x < 8; x++) block[y * 8 + x] = (int16_t)lroundf(col[x]);
+        for (int x = 0; x < 8; x++) block[y * 8 + x] = dct_round_i16(col[x]);
     }
 }
 
@@ -210,7 +218,7 @@ static void dct_block_neon(int16_t *block)
     for (int u = 0; u < 8; u++) {
         for (int v = 0; v < 8; v++) col[v] = tmp[v * 8 + u];
         dct_1d_neon(col, row);
-        for (int v = 0; v < 8; v++) block[v * 8 + u] = (int16_t)lroundf(row[v]);
+        for (int v = 0; v < 8; v++) block[v * 8 + u] = dct_round_i16(row[v]);
     }
 }
 
@@ -225,7 +233,7 @@ static void idct_block_neon(int16_t *block)
     for (int y = 0; y < 8; y++) {
         for (int x = 0; x < 8; x++) row[x] = tmp[y * 8 + x];
         idct_1d_neon(row, col);
-        for (int x = 0; x < 8; x++) block[y * 8 + x] = (int16_t)lroundf(col[x]);
+        for (int x = 0; x < 8; x++) block[y * 8 + x] = dct_round_i16(col[x]);
     }
 }
 
@@ -268,7 +276,7 @@ static void dct_block_scalar(int16_t *block)
     for (int u = 0; u < 8; u++) {
         for (int v = 0; v < 8; v++) col[v] = tmp[v * 8 + u];
         dct_1d(col, row);
-        for (int v = 0; v < 8; v++) block[v * 8 + u] = (int16_t)lroundf(row[v]);
+        for (int v = 0; v < 8; v++) block[v * 8 + u] = dct_round_i16(row[v]);
     }
 }
 
@@ -283,7 +291,7 @@ static void idct_block_scalar(int16_t *block)
     for (int y = 0; y < 8; y++) {
         for (int x = 0; x < 8; x++) row[x] = tmp[y * 8 + x];
         idct_1d(row, col);
-        for (int x = 0; x < 8; x++) block[y * 8 + x] = (int16_t)lroundf(col[x]);
+        for (int x = 0; x < 8; x++) block[y * 8 + x] = dct_round_i16(col[x]);
     }
 }
 

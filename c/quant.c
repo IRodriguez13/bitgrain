@@ -120,7 +120,25 @@ void quantize_block(int16_t *block, const int16_t *table)
 
 void dequantize_block(int16_t *block, const int16_t *table)
 {
+#ifdef BITGRAIN_DEQUANT_SCALAR_ONLY
     dequantize_block_scalar_impl(block, table);
+#else
+    const __m128i zero = _mm_setzero_si128();
+    for (int i = 0; i < 64; i += 8) {
+        __m128i b = _mm_loadu_si128((const __m128i *)&block[i]);
+        __m128i t = _mm_loadu_si128((const __m128i *)&table[i]);
+
+        __m128i bl = _mm_unpacklo_epi16(b, zero);
+        __m128i tl = _mm_unpacklo_epi16(t, zero);
+        __m128i rl = _mm_madd_epi16(bl, tl); /* (b0*t0), (b1*t1), ... */
+
+        __m128i bh = _mm_unpackhi_epi16(b, zero);
+        __m128i th = _mm_unpackhi_epi16(t, zero);
+        __m128i rh = _mm_madd_epi16(bh, th);
+
+        _mm_storeu_si128((__m128i *)&block[i], _mm_packs_epi32(rl, rh));
+    }
+#endif
 }
 
 #elif defined(__ARM_NEON) || defined(__aarch64__)

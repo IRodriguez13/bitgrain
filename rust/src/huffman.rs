@@ -52,7 +52,7 @@ type AcTable = [(u8, u16); 256];
 
 use crate::jpeg_luma_ac_ht::JPEG_LUMA_AC_HT;
 use std::sync::OnceLock;
-const FAST_BITS: u8 = 12;
+const FAST_BITS: u8 = 14;
 type FastEntry = (i16, u8); // (sym, bits_len), sym<0 means miss
 
 /// stb_image_write / ISO 10918-1 Annex K luminance AC Huffman (full 256-entry encode table).
@@ -447,6 +447,32 @@ fn decode_sym(reader: &mut BitReader, tree: &DecodeTree) -> Option<u8> {
         }
     }
 
+    // Branch-reduced tree walk when we have enough buffered bits.
+    if reader.ensure_bits(16) {
+        let bits = reader.bit_buf;
+        let mut idx = 0usize;
+        for depth in 1u8..=16 {
+            let bit_shift = reader.bits_in - depth;
+            let bit = ((bits >> bit_shift) & 1) as usize;
+            let next = tree.nodes[idx].child[bit];
+            if next < 0 {
+                return None;
+            }
+            idx = next as usize;
+            let sym = tree.nodes[idx].sym;
+            if sym >= 0 {
+                reader.bits_in -= depth;
+                if reader.bits_in == 0 {
+                    reader.bit_buf = 0;
+                } else {
+                    reader.bit_buf &= (1u64 << reader.bits_in) - 1;
+                }
+                return Some(sym as u8);
+            }
+        }
+        return None;
+    }
+
     let mut idx = 0usize;
     for _ in 0..16 {
         let bit = reader.read_one_bit()? as usize;
@@ -486,6 +512,8 @@ pub fn encode_plane_with_profile(
 ) -> Vec<u8> {
     let dc_table = if is_chroma { CHROMA_DC_TABLE } else { LUMA_DC_TABLE };
     let ac_table = if use_chroma_ac { jpeg_chroma_ac_table() } else { jpeg_ac_table() };
+    let eob = ac_table[0x00];
+    let zrl = ac_table[0xF0];
     let mut w = BitWriter::new();
     let mut prev_dc: i16 = 0;
 
@@ -505,16 +533,12 @@ pub fn encode_plane_with_profile(
         if dc_cat > 0 { w.write_bits(magnitude_bits(dc_emit, dc_cat), dc_cat); }
 
         // AC (JPEG-style optimization): stop at last non-zero and emit EOB only when needed.
-        let mut last_nz = 0usize;
-        for i in (1..64).rev() {
-            if block.data[ZIGZAG[i]] != 0 {
-                last_nz = i;
-                break;
-            }
+        let mut last_nz = 63usize;
+        while last_nz > 0 && block.data[ZIGZAG[last_nz]] == 0 {
+            last_nz -= 1;
         }
         if last_nz == 0 {
-            let (el, ec) = ac_table[0x00];
-            w.write_bits(ec, el);
+            w.write_bits(eob.1, eob.0);
             continue;
         }
 
@@ -526,20 +550,24 @@ pub fn encode_plane_with_profile(
                 continue;
             }
             while zero_run >= 16 {
-                let (zl, zc) = ac_table[0xF0];
-                w.write_bits(zc, zl);
+                w.write_bits(zrl.1, zrl.0);
                 zero_run -= 16;
             }
             let cat = category(val);
             let sym = (zero_run << 4) | cat;
             let (al, ac) = ac_table[sym as usize];
-            assert!(al > 0, "missing AC Huffman for RS {sym:#04x} (run={zero_run} cat={cat})");
+            debug_assert!(al > 0, "missing AC Huffman for RS {sym:#04x} (run={zero_run} cat={cat})");
+            if al == 0 {
+                // Defensive fallback for unexpected table/profile mismatch.
+                let (el, ec) = ac_table[0x00];
+                w.write_bits(ec, el);
+                break;
+            }
             w.write_bits(ac, al);
             w.write_bits(magnitude_bits(val, cat), cat);
             zero_run = 0;
         }
-        let (el, ec) = ac_table[0x00];
-        w.write_bits(ec, el);
+        w.write_bits(eob.1, eob.0);
     }
     w.flush();
 

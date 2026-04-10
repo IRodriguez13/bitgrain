@@ -8,7 +8,21 @@ use crate::ffi::quantize_block;
 use crate::huffman;
 use crate::zigzag::ZIGZAG;
 use rayon::prelude::*;
-const BLOCK_TILE_SIZE: usize = 256;
+const BLOCK_TILE_SIZE: usize = 512;
+const PARALLEL_BLOCKS_THRESHOLD: usize = 384;
+const PARALLEL_PLANE_PIXELS_THRESHOLD: usize = 262_144;
+const PARALLEL_IMAGE_PIXELS_THRESHOLD: usize = 262_144;
+
+#[inline]
+fn should_parallel_blocks(n_blocks: usize, plane_w: usize, plane_h: usize) -> bool {
+    n_blocks >= PARALLEL_BLOCKS_THRESHOLD
+        && plane_w.saturating_mul(plane_h) >= PARALLEL_PLANE_PIXELS_THRESHOLD
+}
+
+#[inline]
+fn should_parallel_planes(width: usize, height: usize) -> bool {
+    width.saturating_mul(height) >= PARALLEL_IMAGE_PIXELS_THRESHOLD
+}
 
 /// .bg header: "BG" + version + width(u32 LE) + height(u32 LE) + quality(u8) = 12 bytes.
 ///
@@ -337,25 +351,46 @@ fn write_icc_trailer(out: &mut [u8], pos: &mut i32, icc: Option<&[u8]>) {
 // RLE path (legacy v1/v2/v3)
 // ---------------------------------------------------------------------------
 
-fn encode_blocks_rle(blocks: &mut [Block], table: &[i16; 64], out: &mut [u8], pos: &mut i32) {
-    blocks.par_chunks_mut(BLOCK_TILE_SIZE).for_each(|chunk| {
-        for block in chunk.iter_mut() {
+fn encode_blocks_rle(
+    blocks: &mut [Block],
+    table: &[i16; 64],
+    out: &mut [u8],
+    pos: &mut i32,
+    plane_w: usize,
+    plane_h: usize,
+) {
+    if should_parallel_blocks(blocks.len(), plane_w, plane_h) {
+        blocks.par_chunks_mut(BLOCK_TILE_SIZE).for_each(|chunk| {
+            for block in chunk.iter_mut() {
+                dct::dct(block);
+                quantize(&mut block.data, table);
+            }
+        });
+    } else {
+        for block in blocks.iter_mut() {
             dct::dct(block);
             quantize(&mut block.data, table);
         }
-    });
+    }
     for block in blocks.iter() {
         entropy::encode_block_to_buffer(block, out, pos);
     }
 }
 
-fn encode_channel_rle(blocks: &mut [Block], table: &[i16; 64]) -> Vec<u8> {
-    blocks.par_chunks_mut(BLOCK_TILE_SIZE).for_each(|chunk| {
-        for block in chunk.iter_mut() {
+fn encode_channel_rle(blocks: &mut [Block], table: &[i16; 64], plane_w: usize, plane_h: usize) -> Vec<u8> {
+    if should_parallel_blocks(blocks.len(), plane_w, plane_h) {
+        blocks.par_chunks_mut(BLOCK_TILE_SIZE).for_each(|chunk| {
+            for block in chunk.iter_mut() {
+                dct::dct(block);
+                quantize(&mut block.data, table);
+            }
+        });
+    } else {
+        for block in blocks.iter_mut() {
             dct::dct(block);
             quantize(&mut block.data, table);
         }
-    });
+    }
     let cap = blocks.len() * (2 + 63 * 3 + 3);
     let mut buf = vec![0u8; cap];
     let mut p: i32 = 0;
@@ -374,7 +409,7 @@ pub fn encode_grayscale(
     let table = quant_table_for_quality(quality);
     let blockizer = Blockizer::new(width, height);
     let mut blocks = blockizer.generate_blocks(image);
-    encode_blocks_rle(&mut blocks, &table, out, pos);
+    encode_blocks_rle(&mut blocks, &table, out, pos, width, height);
 }
 
 // ---------------------------------------------------------------------------
@@ -385,13 +420,26 @@ pub fn encode_grayscale(
 fn encode_channel_huffman(
     blocks: &mut [Block],
     table: &[i16; 64],
+    plane_w: usize,
+    plane_h: usize,
     is_chroma: bool,
     use_chroma_ac: bool,
     use_dc_delta: bool,
     sparsify_thresholds: Option<&[i16; 64]>,
 ) -> Vec<u8> {
-    blocks.par_chunks_mut(BLOCK_TILE_SIZE).for_each(|chunk| {
-        for block in chunk.iter_mut() {
+    if should_parallel_blocks(blocks.len(), plane_w, plane_h) {
+        blocks.par_chunks_mut(BLOCK_TILE_SIZE).for_each(|chunk| {
+            for block in chunk.iter_mut() {
+                dct::dct(block);
+                quantize(&mut block.data, table);
+                if let Some(thr) = sparsify_thresholds {
+                    sparsify_ac_block(block, thr);
+                }
+                huffman::clamp_block_jpeg_coeffs(block);
+            }
+        });
+    } else {
+        for block in blocks.iter_mut() {
             dct::dct(block);
             quantize(&mut block.data, table);
             if let Some(thr) = sparsify_thresholds {
@@ -399,7 +447,7 @@ fn encode_channel_huffman(
             }
             huffman::clamp_block_jpeg_coeffs(block);
         }
-    });
+    }
     huffman::encode_plane_with_profile(blocks, is_chroma, use_chroma_ac, use_dc_delta)
 }
 
@@ -424,25 +472,35 @@ pub fn encode_rgb_ycbcr(
     let blockizer_full   = Blockizer::new(width, height);
     let blockizer_chroma = Blockizer::new(cw, ch);
 
-    // Encode Y, Cb, Cr in parallel using nested rayon::join (join takes exactly 2 closures)
-    let (y_buf, (cb_buf, cr_buf)) = rayon::join(
-        || {
-            let mut blocks = blockizer_full.generate_blocks(&y);
-            encode_channel_huffman(&mut blocks, &luma_table, false, false, true, Some(&luma_sparsify))
-        },
-        || {
-            rayon::join(
-                || {
-                    let mut blocks = blockizer_chroma.generate_blocks(&cb);
-                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true, Some(&chroma_sparsify))
-                },
-                || {
-                    let mut blocks = blockizer_chroma.generate_blocks(&cr);
-                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true, Some(&chroma_sparsify))
-                },
-            )
-        },
-    );
+    let (y_buf, cb_buf, cr_buf) = if should_parallel_planes(width, height) {
+        let (y_buf, (cb_buf, cr_buf)) = rayon::join(
+            || {
+                let mut blocks = blockizer_full.generate_blocks(&y);
+                encode_channel_huffman(&mut blocks, &luma_table, width, height, false, false, true, Some(&luma_sparsify))
+            },
+            || {
+                rayon::join(
+                    || {
+                        let mut blocks = blockizer_chroma.generate_blocks(&cb);
+                        encode_channel_huffman(&mut blocks, &chroma_table, cw, ch, true, true, true, Some(&chroma_sparsify))
+                    },
+                    || {
+                        let mut blocks = blockizer_chroma.generate_blocks(&cr);
+                        encode_channel_huffman(&mut blocks, &chroma_table, cw, ch, true, true, true, Some(&chroma_sparsify))
+                    },
+                )
+            },
+        );
+        (y_buf, cb_buf, cr_buf)
+    } else {
+        let mut yb = blockizer_full.generate_blocks(&y);
+        let y_buf = encode_channel_huffman(&mut yb, &luma_table, width, height, false, false, true, Some(&luma_sparsify));
+        let mut cbb = blockizer_chroma.generate_blocks(&cb);
+        let cb_buf = encode_channel_huffman(&mut cbb, &chroma_table, cw, ch, true, true, true, Some(&chroma_sparsify));
+        let mut crb = blockizer_chroma.generate_blocks(&cr);
+        let cr_buf = encode_channel_huffman(&mut crb, &chroma_table, cw, ch, true, true, true, Some(&chroma_sparsify));
+        (y_buf, cb_buf, cr_buf)
+    };
 
     bitstream::write_bytes(out, pos, &y_buf);
     bitstream::write_bytes(out, pos, &cb_buf);
@@ -469,32 +527,45 @@ pub fn encode_rgba_ycbcr(
     let blockizer_full   = Blockizer::new(width, height);
     let blockizer_chroma = Blockizer::new(cw, ch);
 
-    let ((y_buf, a_buf), (cb_buf, cr_buf)) = rayon::join(
-        || {
-            rayon::join(
-                || {
-                    let mut blocks = blockizer_full.generate_blocks(&y);
-                    encode_channel_huffman(&mut blocks, &luma_table, false, false, true, Some(&luma_sparsify))
-                },
-                || {
-                    let mut blocks = blockizer_full.generate_blocks(&a);
-                    encode_channel_huffman(&mut blocks, &luma_table, false, false, true, Some(&luma_sparsify))
-                },
-            )
-        },
-        || {
-            rayon::join(
-                || {
-                    let mut blocks = blockizer_chroma.generate_blocks(&cb);
-                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true, Some(&chroma_sparsify))
-                },
-                || {
-                    let mut blocks = blockizer_chroma.generate_blocks(&cr);
-                    encode_channel_huffman(&mut blocks, &chroma_table, true, true, true, Some(&chroma_sparsify))
-                },
-            )
-        },
-    );
+    let (y_buf, cb_buf, cr_buf, a_buf) = if should_parallel_planes(width, height) {
+        let ((y_buf, a_buf), (cb_buf, cr_buf)) = rayon::join(
+            || {
+                rayon::join(
+                    || {
+                        let mut blocks = blockizer_full.generate_blocks(&y);
+                        encode_channel_huffman(&mut blocks, &luma_table, width, height, false, false, true, Some(&luma_sparsify))
+                    },
+                    || {
+                        let mut blocks = blockizer_full.generate_blocks(&a);
+                        encode_channel_huffman(&mut blocks, &luma_table, width, height, false, false, true, Some(&luma_sparsify))
+                    },
+                )
+            },
+            || {
+                rayon::join(
+                    || {
+                        let mut blocks = blockizer_chroma.generate_blocks(&cb);
+                        encode_channel_huffman(&mut blocks, &chroma_table, cw, ch, true, true, true, Some(&chroma_sparsify))
+                    },
+                    || {
+                        let mut blocks = blockizer_chroma.generate_blocks(&cr);
+                        encode_channel_huffman(&mut blocks, &chroma_table, cw, ch, true, true, true, Some(&chroma_sparsify))
+                    },
+                )
+            },
+        );
+        (y_buf, cb_buf, cr_buf, a_buf)
+    } else {
+        let mut yb = blockizer_full.generate_blocks(&y);
+        let y_buf = encode_channel_huffman(&mut yb, &luma_table, width, height, false, false, true, Some(&luma_sparsify));
+        let mut cbb = blockizer_chroma.generate_blocks(&cb);
+        let cb_buf = encode_channel_huffman(&mut cbb, &chroma_table, cw, ch, true, true, true, Some(&chroma_sparsify));
+        let mut crb = blockizer_chroma.generate_blocks(&cr);
+        let cr_buf = encode_channel_huffman(&mut crb, &chroma_table, cw, ch, true, true, true, Some(&chroma_sparsify));
+        let mut ab = blockizer_full.generate_blocks(&a);
+        let a_buf = encode_channel_huffman(&mut ab, &luma_table, width, height, false, false, true, Some(&luma_sparsify));
+        (y_buf, cb_buf, cr_buf, a_buf)
+    };
 
     bitstream::write_bytes(out, pos, &y_buf);
     bitstream::write_bytes(out, pos, &cb_buf);
@@ -530,12 +601,21 @@ pub fn encode_rgb_rle(
     write_header(out, pos, BG_MAGIC_RGB, width, height, quality);
     let table = quant_table_for_quality(quality);
     let blockizer = Blockizer::new(width, height);
-    let channel_bufs: Vec<Vec<u8>> = (0..3usize).into_par_iter()
-        .map(|c| {
-            let mut blocks = blockizer.generate_blocks_rgb(image, c);
-            encode_channel_rle(&mut blocks, &table)
-        })
-        .collect();
+    let channel_bufs: Vec<Vec<u8>> = if should_parallel_planes(width, height) {
+        (0..3usize).into_par_iter()
+            .map(|c| {
+                let mut blocks = blockizer.generate_blocks_rgb(image, c);
+                encode_channel_rle(&mut blocks, &table, width, height)
+            })
+            .collect()
+    } else {
+        (0..3usize)
+            .map(|c| {
+                let mut blocks = blockizer.generate_blocks_rgb(image, c);
+                encode_channel_rle(&mut blocks, &table, width, height)
+            })
+            .collect()
+    };
     for buf in &channel_bufs { bitstream::write_bytes(out, pos, buf); }
     write_icc_trailer(out, pos, icc);
 }
@@ -548,12 +628,21 @@ pub fn encode_rgba_rle(
     write_header(out, pos, BG_MAGIC_RGBA, width, height, quality);
     let table = quant_table_for_quality(quality);
     let blockizer = Blockizer::new(width, height);
-    let channel_bufs: Vec<Vec<u8>> = (0..4usize).into_par_iter()
-        .map(|c| {
-            let mut blocks = blockizer.generate_blocks_rgba(image, c);
-            encode_channel_rle(&mut blocks, &table)
-        })
-        .collect();
+    let channel_bufs: Vec<Vec<u8>> = if should_parallel_planes(width, height) {
+        (0..4usize).into_par_iter()
+            .map(|c| {
+                let mut blocks = blockizer.generate_blocks_rgba(image, c);
+                encode_channel_rle(&mut blocks, &table, width, height)
+            })
+            .collect()
+    } else {
+        (0..4usize)
+            .map(|c| {
+                let mut blocks = blockizer.generate_blocks_rgba(image, c);
+                encode_channel_rle(&mut blocks, &table, width, height)
+            })
+            .collect()
+    };
     for buf in &channel_bufs { bitstream::write_bytes(out, pos, buf); }
     write_icc_trailer(out, pos, icc);
 }

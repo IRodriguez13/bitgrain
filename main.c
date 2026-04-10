@@ -31,6 +31,7 @@ static void print_global_help(const char *prog)
         "  --output-quality <1-100>  Output JPG/WebP quality (default 85)\n"
         "  --threads <n>        Worker threads (default runtime)\n"
         "  --deterministic      Alias for --threads 1\n"
+        "  Env: BITGRAIN_THREADS / BITGRAIN_THREADS_CAP\n"
         "  --overwrite          Overwrite existing files\n"
         "  --metrics            Print PSNR/SSIM (roundtrip only)\n"
         "  --help               Show this help\n"
@@ -91,9 +92,23 @@ int main(int argc, char **argv)
         if (r != 0) return 1;
     }
 
-    if (ctx.threads > 0) {
-        if (bitgrain_set_threads(ctx.threads) != 0) {
-            fprintf(stderr, "Error: could not set worker threads to %d (set before codec use).\n", ctx.threads);
+    int threads = ctx.threads;
+    const char *env_threads = getenv("BITGRAIN_THREADS");
+    if (threads <= 0 && env_threads && *env_threads) {
+        int t = atoi(env_threads);
+        if (t > 0) threads = t;
+    }
+    const char *env_cap = getenv("BITGRAIN_THREADS_CAP");
+    if (env_cap && *env_cap) {
+        int cap = atoi(env_cap);
+        if (cap > 0 && (threads <= 0 || threads > cap)) {
+            threads = cap;
+        }
+    }
+
+    if (threads > 0) {
+        if (bitgrain_set_threads(threads) != 0) {
+            fprintf(stderr, "Error: could not set worker threads to %d (set before codec use).\n", threads);
             cli_ctx_free(&ctx);
             return 1;
         }

@@ -28,11 +28,27 @@ use crate::ffi::dequantize_block;
 use crate::huffman;
 use crate::zigzag::ZIGZAG;
 use rayon::prelude::*;
-const BLOCK_TILE_SIZE: usize = 256;
+const BLOCK_TILE_SIZE: usize = 512;
+const PARALLEL_DEQUANT_BLOCKS_THRESHOLD: usize = 384;
+const PARALLEL_DEQUANT_PIXELS_THRESHOLD: usize = 262_144;
+const PARALLEL_WRITE_BLOCKS_THRESHOLD: usize = 2048;
+const PARALLEL_WRITE_PIXELS_THRESHOLD: usize = 786_432;
 
 const HEADER_SIZE:     usize = 3 + 4 + 4 + 1;
 const HEADER_SIZE_OLD: usize = 3 + 4 + 4;
 const EOB_RUN: u8 = 0xFF;
+
+#[inline]
+fn should_parallel_dequant(n_blocks: usize, w: usize, h: usize) -> bool {
+    n_blocks >= PARALLEL_DEQUANT_BLOCKS_THRESHOLD
+        && w.saturating_mul(h) >= PARALLEL_DEQUANT_PIXELS_THRESHOLD
+}
+
+#[inline]
+fn should_parallel_write(n_blocks: usize, w: usize, h: usize) -> bool {
+    n_blocks >= PARALLEL_WRITE_BLOCKS_THRESHOLD
+        && w.saturating_mul(h) >= PARALLEL_WRITE_PIXELS_THRESHOLD
+}
 
 // ---------------------------------------------------------------------------
 // RLE decode (v1/v2/v3)
@@ -69,6 +85,31 @@ fn decode_rle_to_blocks(buffer: &[u8], mut pos: usize, n: usize) -> Option<(Vec<
     Some((blocks, pos))
 }
 
+#[inline]
+fn write_block_to_plane(block: &Block, plane: &mut [u8], w: usize, h: usize, bx: usize, by: usize) {
+    // Fast interior path: avoid bounds checks per pixel.
+    if bx + 8 <= w && by + 8 <= h {
+        for y in 0..8 {
+            let dst = (by + y) * w + bx;
+            let src = y * 8;
+            for x in 0..8 {
+                plane[dst + x] = (block.data[src + x] + 128).clamp(0, 255) as u8;
+            }
+        }
+        return;
+    }
+    // Border blocks (partial at image edges).
+    for y in 0..8 {
+        for x in 0..8 {
+            let py = by + y;
+            let px = bx + x;
+            if py < h && px < w {
+                plane[py * w + px] = (block.data[y * 8 + x] + 128).clamp(0, 255) as u8;
+            }
+        }
+    }
+}
+
 /// Decode one plane (RLE), dequant+IDCT in parallel, write to interleaved output.
 fn decode_plane_rle(
     buffer: &[u8], pos: usize,
@@ -81,22 +122,40 @@ fn decode_plane_rle(
 
     let (mut blocks, new_pos) = decode_rle_to_blocks(buffer, pos, n)?;
 
-    blocks.par_chunks_mut(BLOCK_TILE_SIZE).for_each(|chunk| {
-        for block in chunk.iter_mut() {
+    if should_parallel_dequant(n, w, h) {
+        blocks.par_chunks_mut(BLOCK_TILE_SIZE).for_each(|chunk| {
+            for block in chunk.iter_mut() {
+                unsafe { dequantize_block(block.data.as_mut_ptr(), quant.as_ptr()); }
+                dct::idct(block);
+            }
+        });
+    } else {
+        for block in blocks.iter_mut() {
             unsafe { dequantize_block(block.data.as_mut_ptr(), quant.as_ptr()); }
             dct::idct(block);
         }
-    });
+    }
 
     for (idx, block) in blocks.iter().enumerate() {
         let by = (idx / bw) * 8;
         let bx = (idx % bw) * 8;
-        for y in 0..8 {
-            for x in 0..8 {
-                let py = by + y; let px = bx + x;
-                if py < h && px < w {
-                    let i = (py * w + px) * stride + offset;
-                    out[i] = (block.data[y * 8 + x] + 128).clamp(0, 255) as u8;
+        // Interleaved write for legacy planar paths.
+        if bx + 8 <= w && by + 8 <= h {
+            for y in 0..8 {
+                let src = y * 8;
+                let row = (by + y) * w;
+                for x in 0..8 {
+                    out[(row + bx + x) * stride + offset] = (block.data[src + x] + 128).clamp(0, 255) as u8;
+                }
+            }
+        } else {
+            for y in 0..8 {
+                for x in 0..8 {
+                    let py = by + y;
+                    let px = bx + x;
+                    if py < h && px < w {
+                        out[(py * w + px) * stride + offset] = (block.data[y * 8 + x] + 128).clamp(0, 255) as u8;
+                    }
                 }
             }
         }
@@ -126,27 +185,65 @@ fn decode_plane_huffman(
         huffman::decode_plane_with_profile(buffer, pos, n, is_chroma, use_chroma_ac, use_dc_delta)?;
 
     // Parallel dequant + IDCT
-    blocks.par_chunks_mut(BLOCK_TILE_SIZE).for_each(|chunk| {
-        for block in chunk.iter_mut() {
+    if should_parallel_dequant(n, w, h) {
+        blocks.par_chunks_mut(BLOCK_TILE_SIZE).for_each(|chunk| {
+            for block in chunk.iter_mut() {
+                unsafe { dequantize_block(block.data.as_mut_ptr(), quant.as_ptr()); }
+                dct::idct(block);
+            }
+        });
+    } else {
+        for block in blocks.iter_mut() {
             unsafe { dequantize_block(block.data.as_mut_ptr(), quant.as_ptr()); }
             dct::idct(block);
         }
-    });
+    }
 
     // Write to flat plane
-    for (idx, block) in blocks.iter().enumerate() {
-        let by = (idx / bw) * 8;
-        let bx = (idx % bw) * 8;
-        for y in 0..8 {
-            for x in 0..8 {
-                let py = by + y; let px = bx + x;
-                if py < h && px < w {
-                    let i = py * w + px;
-                    if i < plane.len() {
-                        plane[i] = (block.data[y * 8 + x] + 128).clamp(0, 255) as u8;
+    if should_parallel_write(n, w, h) {
+        let band_stride = w * 8;
+        plane
+            .par_chunks_mut(band_stride.max(1))
+            .enumerate()
+            .for_each(|(br, band)| {
+                let by = br * 8;
+                let band_h = (h.saturating_sub(by)).min(8);
+                if band_h == 0 {
+                    return;
+                }
+                let row_blocks_start = br * bw;
+                for bx_i in 0..bw {
+                    let idx = row_blocks_start + bx_i;
+                    if idx >= blocks.len() {
+                        break;
+                    }
+                    let block = &blocks[idx];
+                    let bx = bx_i * 8;
+                    if bx + 8 <= w && band_h == 8 {
+                        for y in 0..8 {
+                            let dst = y * w + bx;
+                            let src = y * 8;
+                            for x in 0..8 {
+                                band[dst + x] = (block.data[src + x] + 128).clamp(0, 255) as u8;
+                            }
+                        }
+                    } else {
+                        for y in 0..band_h {
+                            for x in 0..8 {
+                                let px = bx + x;
+                                if px < w {
+                                    band[y * w + px] = (block.data[y * 8 + x] + 128).clamp(0, 255) as u8;
+                                }
+                            }
+                        }
                     }
                 }
-            }
+            });
+    } else {
+        for (idx, block) in blocks.iter().enumerate() {
+            let by = (idx / bw) * 8;
+            let bx = (idx % bw) * 8;
+            write_block_to_plane(block, plane, w, h, bx, by);
         }
     }
     Some(new_pos)
