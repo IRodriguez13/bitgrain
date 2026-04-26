@@ -1,16 +1,15 @@
 // Package bitgrain provides Go bindings for the Bitgrain image codec (.bg encode/decode).
 //
-// Build the library first (from repo root): make bitgrain
+// Build/install the library first (from repo root): make install PREFIX=$HOME/.local
 // Then build with cgo, e.g.:
 //
 //	CGO_ENABLED=1 go build
 //	# Or with explicit paths:
-//	CGO_CFLAGS="-I/path/to/bitgrain/includes" CGO_LDFLAGS="-L/path/to/bitgrain/rust/target/release -lbitgrain -lpthread -ldl -lm" go build
+//	PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig CGO_ENABLED=1 go build
 package bitgrain
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../includes
-#cgo LDFLAGS: -L${SRCDIR}/../../rust/target/release -lbitgrain -lpthread -ldl -lm -lwebp
+#cgo pkg-config: bitgrain
 
 #include "encoder.h"
 */

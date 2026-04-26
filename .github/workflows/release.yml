@@ -36,17 +36,19 @@ jobs:
       - name: Build release artifacts
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/rust/target
-          RUSTFLAGS: -C target-cpu=native
         run: |
-          make bitgrain
+          make CFLAGS_NATIVE= RUSTFLAGS_NATIVE= bitgrain
+          make CFLAGS_NATIVE= RUSTFLAGS_NATIVE= libsimd
+          make CFLAGS_NATIVE= RUSTFLAGS_NATIVE= libbitgrain-shared
+          make CFLAGS_NATIVE= RUSTFLAGS_NATIVE= install PREFIX=/usr/local DESTDIR=$PWD/distroot
           ARCHIVE="bitgrain-${GITHUB_REF_NAME}-linux-x86_64.tar.gz"
           mkdir -p dist
           cp bitgrain dist/
-          cp README.md LICENSE dist/
+          cp README.md CHANGELOG.md LICENSE dist/
           cp man/bitgrain.1 dist/
           cp completions/bitgrain.bash dist/
-          mkdir -p dist/include/bitgrain
-          cp includes/encoder.h dist/include/bitgrain/
+          cp -r distroot/usr/local/include dist/
+          cp -r distroot/usr/local/lib dist/
           tar -C dist -czf "$ARCHIVE" .
           sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
 

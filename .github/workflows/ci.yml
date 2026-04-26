@@ -10,7 +10,11 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,8 +24,12 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential libwebp-dev libpng-dev
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y build-essential libwebp-dev libpng-dev pkg-config
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            brew install webp libpng pkg-config
+          fi
 
       - name: Run Rust tests (release)
         working-directory: rust
@@ -33,5 +41,25 @@ jobs:
       - name: Build CLI
         run: make bitgrain
 
+      - name: Build shared libraries
+        run: |
+          make libsimd
+          make libbitgrain-shared
+
+      - name: Install library artifacts to staging prefix
+        run: make install PREFIX="$HOME/.local"
+
+      - name: C library consumer smoke (pkg-config)
+        run: |
+          export PKG_CONFIG_PATH="$HOME/.local/lib/pkgconfig:$PKG_CONFIG_PATH"
+          gcc scripts/lib_api_smoke.c -o /tmp/lib_api_smoke $(pkg-config --cflags --libs bitgrain)
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            export LD_LIBRARY_PATH="$HOME/.local/lib:$LD_LIBRARY_PATH"
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            export DYLD_LIBRARY_PATH="$HOME/.local/lib:$DYLD_LIBRARY_PATH"
+          fi
+          /tmp/lib_api_smoke /tmp/not-a-bg.bin || true
+
       - name: Run integration tests
+        if: runner.os == 'Linux'
         run: ./tests/integration.sh

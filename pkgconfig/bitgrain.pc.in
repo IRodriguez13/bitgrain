@@ -1,0 +1,11 @@
+prefix=@PREFIX@
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: bitgrain
+Description: Bitgrain image codec library
+Version: @VERSION@
+Requires:
+Libs: -L${libdir} -lbitgrain -lbitgrain-simd -lpthread -ldl -lm
+Cflags: -I${includedir}/bitgrain

@@ -66,6 +66,10 @@ int bitgrain_set_threads(int32_t threads);
 /*
  * Thread-local error status for API calls.
  * Every public API call updates this state. On success, code is BITGRAIN_OK.
+ * bitgrain_last_error_message() returns a pointer owned by the library:
+ * - valid only in the calling thread
+ * - may change after the next bitgrain_* call on that same thread
+ * Copy it immediately if you need to persist it.
  */
 int bitgrain_last_error_code(void);
 const char *bitgrain_last_error_message(void);
@@ -75,6 +79,7 @@ void bitgrain_clear_error(void);
  * Decode a .bg stream into pixels (grayscale, RGB, or RGBA per header).
  * out_channels: output, 1 = grayscale (w*h), 3 = RGB (w*h*3), 4 = RGBA (w*h*4).
  * out_capacity must be >= width*height*out_channels.
+ * On failure, output fields should be treated as undefined.
  */
 int bitgrain_decode(
     const uint8_t *buffer,

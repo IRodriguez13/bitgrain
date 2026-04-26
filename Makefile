@@ -7,9 +7,12 @@ RUST_DIR = rust
 # Cargo emits the staticlib under deps/ (not next to libbitgrain.so).
 RUST_TARGET = $(RUST_DIR)/target/release/deps/libbitgrain.a
 TARGET  = bitgrain
+BITGRAIN_VERSION ?= 2.0.0
+ABI_MAJOR ?= 2
 
 # Base C flags
 CFLAGS  = -std=c11 -Wall -Wextra -Iincludes -Ic
+PIC_CFLAGS = -fPIC
 
 # Release optimizations. Portable: make CFLAGS_NATIVE= RUSTFLAGS_NATIVE=
 CFLAGS  += -O3 -DNDEBUG
@@ -49,6 +52,12 @@ ifeq ($(UNAME_S),Darwin)
 endif
 ifeq ($(UNAME_S),Unknown)
   LDFLAGS_EXTRA += -lpthread -ldl -lm $(WEBP_LIBS)
+endif
+ifneq (,$(findstring MINGW,$(UNAME_S)))
+  LDFLAGS_EXTRA += -lpthread -lm $(WEBP_LIBS)
+endif
+ifneq (,$(findstring MSYS,$(UNAME_S)))
+  LDFLAGS_EXTRA += -lpthread -lm $(WEBP_LIBS)
 endif
 
 LDFLAGS = $(LDFLAGS_EXTRA)
@@ -101,8 +110,43 @@ ifeq ($(UNAME_S),Darwin)
   RUST_SO = $(RUST_DIR)/target/release/libbitgrain.dylib
 endif
 
+LIBSIMD_BASENAME = libbitgrain-simd
+LIBSIMD_SONAME = $(LIBSIMD_BASENAME).so.$(ABI_MAJOR)
+LIBSIMD_REAL = $(LIBSIMD_BASENAME).so.$(BITGRAIN_VERSION)
+LIBSIMD_LINK = $(LIBSIMD_BASENAME).so
+
+LIBBITGRAIN_BASENAME = libbitgrain
+LIBBITGRAIN_SONAME = $(LIBBITGRAIN_BASENAME).so.$(ABI_MAJOR)
+LIBBITGRAIN_REAL = $(LIBBITGRAIN_BASENAME).so.$(BITGRAIN_VERSION)
+LIBBITGRAIN_LINK = $(LIBBITGRAIN_BASENAME).so
+
+ifeq ($(UNAME_S),Darwin)
+  LIBSIMD_SONAME = $(LIBSIMD_BASENAME).$(ABI_MAJOR).dylib
+  LIBSIMD_REAL = $(LIBSIMD_BASENAME).$(BITGRAIN_VERSION).dylib
+  LIBSIMD_LINK = $(LIBSIMD_BASENAME).dylib
+  LIBBITGRAIN_SONAME = $(LIBBITGRAIN_BASENAME).$(ABI_MAJOR).dylib
+  LIBBITGRAIN_REAL = $(LIBBITGRAIN_BASENAME).$(BITGRAIN_VERSION).dylib
+  LIBBITGRAIN_LINK = $(LIBBITGRAIN_BASENAME).dylib
+endif
+
+BUILD_LIB_DIR = build/lib
+PIC_DCT_OBJ = $(BUILD_LIB_DIR)/dct.pic.o
+PIC_QUANT_OBJ = $(BUILD_LIB_DIR)/quant.pic.o
+LIBSIMD_PATH = $(BUILD_LIB_DIR)/$(LIBSIMD_REAL)
+LIBBITGRAIN_PATH = $(BUILD_LIB_DIR)/$(LIBBITGRAIN_REAL)
+
 lib-shared: $(RUST_TARGET)
 	@test -f $(RUST_SO) && echo "Shared lib: $(RUST_SO)" || true
+
+libsimd: $(LIBSIMD_PATH)
+	@ln -sfn $(LIBSIMD_REAL) $(BUILD_LIB_DIR)/$(LIBSIMD_SONAME)
+	@ln -sfn $(LIBSIMD_SONAME) $(BUILD_LIB_DIR)/$(LIBSIMD_LINK)
+	@echo "Built: $(BUILD_LIB_DIR)/$(LIBSIMD_LINK)"
+
+libbitgrain-shared: $(LIBBITGRAIN_PATH)
+	@ln -sfn $(LIBBITGRAIN_REAL) $(BUILD_LIB_DIR)/$(LIBBITGRAIN_SONAME)
+	@ln -sfn $(LIBBITGRAIN_SONAME) $(BUILD_LIB_DIR)/$(LIBBITGRAIN_LINK)
+	@echo "Built: $(BUILD_LIB_DIR)/$(LIBBITGRAIN_LINK)"
 
 # ==============================
 # C build
@@ -119,10 +163,33 @@ c/dct.o: c/dct.c
 c/quant.o: c/quant.c
 	$(CC) $(CFLAGS) $(HOT_MATH_CFLAGS) -c $< -o $@
 
+$(PIC_DCT_OBJ): c/dct.c
+	@mkdir -p $(BUILD_LIB_DIR)
+	$(CC) $(CFLAGS) $(PIC_CFLAGS) $(HOT_MATH_CFLAGS) -c $< -o $@
+
+$(PIC_QUANT_OBJ): c/quant.c
+	@mkdir -p $(BUILD_LIB_DIR)
+	$(CC) $(CFLAGS) $(PIC_CFLAGS) $(HOT_MATH_CFLAGS) -c $< -o $@
+
+$(LIBSIMD_PATH): $(PIC_DCT_OBJ) $(PIC_QUANT_OBJ)
+ifeq ($(UNAME_S),Darwin)
+	$(CC) -dynamiclib -Wl,-install_name,@rpath/$(LIBSIMD_SONAME) -Wl,-compatibility_version,$(ABI_MAJOR) -Wl,-current_version,$(BITGRAIN_VERSION) -o $@ $^ -lm
+else
+	$(CC) -shared -Wl,-soname,$(LIBSIMD_SONAME) -o $@ $^ -lm
+endif
+
+$(LIBBITGRAIN_PATH): $(RUST_TARGET) $(PIC_DCT_OBJ) $(PIC_QUANT_OBJ)
+ifeq ($(UNAME_S),Darwin)
+	$(CC) -dynamiclib -Wl,-install_name,@rpath/$(LIBBITGRAIN_SONAME) -Wl,-compatibility_version,$(ABI_MAJOR) -Wl,-current_version,$(BITGRAIN_VERSION) -o $@ -Wl,-all_load $(RUST_TARGET) $(PIC_DCT_OBJ) $(PIC_QUANT_OBJ) -lpthread -ldl -lm
+else
+	$(CC) -shared -Wl,-soname,$(LIBBITGRAIN_SONAME) -Wl,--whole-archive $(RUST_TARGET) -Wl,--no-whole-archive $(PIC_DCT_OBJ) $(PIC_QUANT_OBJ) -o $@ -lpthread -ldl -lm
+endif
+
 main.o: main.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-.PHONY: all build c bench clean install rebuild lib-shared build-portable build-avx2 bench-avx2
+.PHONY: all build c bench clean install rebuild lib-shared libsimd libbitgrain-shared \
+	build-portable build-avx2 bench-avx2 lib-consumer-smoke
 
 # ==============================
 # Bench (standalone profiler)
@@ -149,6 +216,7 @@ bench/main.o: bench/main.c bench/bench.h
 
 clean:
 	rm -f $(C_OBJS) c/webp_io.o $(TARGET) $(BENCH_TARGET) $(BENCH_OBJS)
+	rm -rf $(BUILD_LIB_DIR) build/pkgconfig build/cmake
 	cd $(RUST_DIR) && CARGO_TARGET_DIR="$(abspath $(RUST_DIR)/target)" cargo clean
 
 # ==============================
@@ -157,19 +225,46 @@ clean:
 # Usage: make install [PREFIX=/usr/local]
 PREFIX ?= /usr/local
 
-install: bitgrain
+install: bitgrain libbitgrain-shared libsimd
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -m 755 bitgrain $(DESTDIR)$(PREFIX)/bin/
 	install -d $(DESTDIR)$(PREFIX)/include/bitgrain
 	install -m 644 includes/encoder.h $(DESTDIR)$(PREFIX)/include/bitgrain/
 	install -d $(DESTDIR)$(PREFIX)/lib
 	install -m 644 $(RUST_TARGET) $(DESTDIR)$(PREFIX)/lib/libbitgrain.a
+	install -m 755 $(LIBBITGRAIN_PATH) $(DESTDIR)$(PREFIX)/lib/$(LIBBITGRAIN_REAL)
+	ln -sfn $(LIBBITGRAIN_REAL) $(DESTDIR)$(PREFIX)/lib/$(LIBBITGRAIN_SONAME)
+	ln -sfn $(LIBBITGRAIN_SONAME) $(DESTDIR)$(PREFIX)/lib/$(LIBBITGRAIN_LINK)
+	install -m 755 $(LIBSIMD_PATH) $(DESTDIR)$(PREFIX)/lib/$(LIBSIMD_REAL)
+	ln -sfn $(LIBSIMD_REAL) $(DESTDIR)$(PREFIX)/lib/$(LIBSIMD_SONAME)
+	ln -sfn $(LIBSIMD_SONAME) $(DESTDIR)$(PREFIX)/lib/$(LIBSIMD_LINK)
+	install -d build/pkgconfig
+	sed \
+		-e 's|@PREFIX@|$(PREFIX)|g' \
+		-e 's|@VERSION@|$(BITGRAIN_VERSION)|g' \
+		-e 's|@ABI_MAJOR@|$(ABI_MAJOR)|g' \
+		pkgconfig/bitgrain.pc.in > build/pkgconfig/bitgrain.pc
+	install -d $(DESTDIR)$(PREFIX)/lib/pkgconfig
+	install -m 644 build/pkgconfig/bitgrain.pc $(DESTDIR)$(PREFIX)/lib/pkgconfig/bitgrain.pc
+	install -d build/cmake
+	sed \
+		-e 's|@PREFIX@|$(PREFIX)|g' \
+		-e 's|@VERSION@|$(BITGRAIN_VERSION)|g' \
+		-e 's|@ABI_MAJOR@|$(ABI_MAJOR)|g' \
+		cmake/BitgrainConfig.cmake.in > build/cmake/BitgrainConfig.cmake
+	install -d $(DESTDIR)$(PREFIX)/lib/cmake/Bitgrain
+	install -m 644 build/cmake/BitgrainConfig.cmake $(DESTDIR)$(PREFIX)/lib/cmake/Bitgrain/BitgrainConfig.cmake
 	install -d $(DESTDIR)$(PREFIX)/share/bash-completion/completions
 	install -m 644 completions/bitgrain.bash $(DESTDIR)$(PREFIX)/share/bash-completion/completions/bitgrain
 	install -d $(DESTDIR)$(PREFIX)/share/man/man1
 	install -m 644 man/bitgrain.1 $(DESTDIR)$(PREFIX)/share/man/man1/bitgrain.1
-	@if [ -f $(RUST_SO) ]; then install -m 755 $(RUST_SO) $(DESTDIR)$(PREFIX)/lib/; echo "Installed shared lib: $(PREFIX)/lib/"; fi
-	@echo "Installed: $(DESTDIR)$(PREFIX)/bin/bitgrain, include/bitgrain/encoder.h, lib/libbitgrain.a, completion and manpage"
+	@echo "Installed: CLI + static/shared libs + pkg-config + CMake config"
+
+lib-consumer-smoke: install
+	@PKG_CONFIG_PATH="$(DESTDIR)$(PREFIX)/lib/pkgconfig:$$PKG_CONFIG_PATH" \
+	$(CC) scripts/lib_api_smoke.c -o /tmp/bitgrain_lib_api_smoke \
+	$$(PKG_CONFIG_PATH="$(DESTDIR)$(PREFIX)/lib/pkgconfig:$$PKG_CONFIG_PATH" pkg-config --cflags --libs bitgrain)
+	@LD_LIBRARY_PATH="$(DESTDIR)$(PREFIX)/lib:$$LD_LIBRARY_PATH" /tmp/bitgrain_lib_api_smoke /tmp/nonexistent.bg >/dev/null 2>&1 || true
 
 # ==============================
 # Rebuild
